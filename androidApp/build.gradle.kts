@@ -22,7 +22,10 @@ val haloVersion = (findProperty("haloVersion") as String?) ?: "1.0.0"
  */
 val haloVersionCode = haloVersion.substringBefore('-').split('.').let { parts ->
     fun part(i: Int) = parts.getOrNull(i)?.toIntOrNull() ?: 0
-    part(0) * 10_000 + part(1) * 100 + part(2)
+    // coerceAtLeast(1) because AGP rejects a versionCode of 0 outright, and every way of getting
+    // there is a mangled version string rather than a real intent to ship "0". Failing on the
+    // *version* is clear; failing on a derived integer three steps away is not.
+    (part(0) * 10_000 + part(1) * 100 + part(2)).coerceAtLeast(1)
 }
 
 /**

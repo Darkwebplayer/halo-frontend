@@ -44,6 +44,16 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Building Halo $version"
 
+          # macOS refuses an app-version whose first number is zero ("The first number in an
+          # app-version cannot be zero or negative"), while Android and Linux accept it happily —
+          # so a v0.x tag fails halfway through the matrix, ten minutes in, with the two platforms
+          # that matter least still green. Rejecting it here costs a second and says why.
+          case "$version" in
+            0|0.*) echo "::error::Version '$version' starts with 0. macOS rejects a zero major version — tag v1.0.0 or later."; exit 1 ;;
+          esac
+          echo "$version" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}$' \
+            || { echo "::error::Version '$version' must be one to three dot-separated numbers. Pre-release suffixes are rejected by both DMG and MSI."; exit 1; }
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -136,6 +146,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
 
       - name: Package
+        # bash on every runner, including Windows. PowerShell is windows-latest's default and it
+        # mangled the unquoted `-PhaloVersion=0.0.1` into `0`, splitting the rest into a separate
+        # token — which surfaced as a bogus "versionCode is set to 0" from a completely unrelated
+        # module. With a version like 1.0.0 the same bug would have silently shipped "1".
+        shell: bash
         # Deliberately packageDmg/Msi/Deb, NOT the packageRelease* variants. Those run ProGuard,
         # which strips the reflection kotlinx.serialization and ktor rely on — and every model and
         # every network call in this app goes through both. Switching means writing keep rules and
@@ -151,6 +166,20 @@ jobs:
           NOTARIZATION_PASSWORD: ${{ secrets.NOTARIZATION_PASSWORD }}
           NOTARIZATION_TEAM_ID: ${{ secrets.NOTARIZATION_TEAM_ID }}
         run: ./gradlew :desktopApp:${{ matrix.task }} -PhaloVersion=${{ needs.verify.outputs.version }} --console=plain
+
+      - name: Show the jpackage log
+        # jpackage writes the actual reason to a file on the runner and Gradle only prints the
+        # path, which is gone the moment the job ends. Without this a packaging failure reads as
+        # "External tool execution failed / Exit code: 1" and needs a local reproduction to
+        # diagnose at all.
+        if: failure()
+        shell: bash
+        run: |
+          for f in desktopApp/build/compose/logs/*/*/*.txt; do
+            [ -f "$f" ] || continue
+            echo "───── $f"
+            cat "$f"
+          done
 
       - name: Check the macOS bundle is signed
         # Cheap guard on the one failure that is invisible until a user on an Apple Silicon Mac

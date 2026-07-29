@@ -99,7 +99,16 @@ tasks.withType<Test> { useJUnit() }
  */
 abstract class AdHocSignApp : DefaultTask() {
 
-    @get:InputDirectory
+    /**
+     * Deliberately `@Internal`, not `@InputDirectory`.
+     *
+     * This task is wired with `finalizedBy`, so it still runs when the task that produces the app
+     * image has failed — and an `@InputDirectory` pointing at a directory that was never created
+     * fails *validation*, burying the real error under a second, more confusing one. Being an
+     * internal property also means Gradle never considers this up to date, which is correct: the
+     * task modifies the very directory it reads.
+     */
+    @get:Internal
     abstract val appDir: DirectoryProperty
 
     /**
@@ -116,6 +125,9 @@ abstract class AdHocSignApp : DefaultTask() {
     fun sign() {
         if (skip.get()) return
         val app = appDir.get().asFile
+        // Absent means the app image never got built, so the real failure is already being
+        // reported by the task that should have produced it. Say nothing and get out of the way.
+        if (!app.exists()) return
         // --deep is discouraged for real distribution signing, where each nested binary should be
         // signed bottom-up with its own identity. For an ad-hoc pass over a bundled JRE containing
         // hundreds of dylibs it is the whole point, and there are no entitlements to preserve.
