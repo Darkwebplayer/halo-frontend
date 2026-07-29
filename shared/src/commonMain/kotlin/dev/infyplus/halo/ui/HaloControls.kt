@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -163,6 +164,9 @@ fun HaloButton(
             )
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 9.dp),
+        // No-op while the button wraps its label, which is every existing use — it matters only
+        // when a caller stretches one with fillMaxWidth, where the label would otherwise sit left.
+        contentAlignment = Alignment.Center,
     ) {
         Text(
             label,

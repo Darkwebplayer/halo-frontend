@@ -97,25 +97,34 @@ class HaloConversation(
         busy = true
         state.flash(Expression.Wait, ms = 30_000) // held until the reply lands
 
-        val result = runCatching {
-            val response = api.message(trimmed, itemId = scope?.id)
-            buildList {
-                // Chat is the one route with nothing to report — showing "chat → nothing
-                // happened" above a greeting is noise, and the absence of a chip is already
-                // the signal that nothing was recorded.
-                if (response.route != "chat") {
-                    add(ThreadEntry.Routed(routeLabel(response.route), response.route == "question"))
-                }
-                response.answer?.let { add(ThreadEntry.Info(it)) }
-                response.item?.let { add(ThreadEntry.Card(it)) }
-                if (response.reply.isNotBlank()) {
-                    add(ThreadEntry.Said(response.reply, fromUser = false))
-                }
-            } to response
+        // try/finally, because `busy` gates the composer: anything that escapes this — including a
+        // cancellation from the panel being closed mid-send — would otherwise leave the input box
+        // disabled with a typing indicator above it, for the rest of the process.
+        val result = try {
+            apiCatching {
+                val response = api.message(trimmed, itemId = scope?.id)
+                buildList {
+                    // Chat is the one route with nothing to report — showing "chat → nothing
+                    // happened" above a greeting is noise, and the absence of a chip is already
+                    // the signal that nothing was recorded.
+                    if (response.route != "chat") {
+                        add(ThreadEntry.Routed(routeLabel(response.route), response.route == "question"))
+                    }
+                    response.answer?.let { add(ThreadEntry.Info(it)) }
+                    response.item?.let { add(ThreadEntry.Card(it)) }
+                    if (response.reply.isNotBlank()) {
+                        add(ThreadEntry.Said(response.reply, fromUser = false))
+                    }
+                } to response
+            }
+        } finally {
+            entries.remove(ThreadEntry.Typing)
+            busy = false
+            // The Wait above has no timer worth waiting out — it is held until the reply lands.
+            // Both outcomes below flash over it; this covers the third case, where neither runs.
+            state.clearFlash()
         }
 
-        entries.remove(ThreadEntry.Typing)
-        busy = false
         // Only a scoped reply that actually changed or completed the item counts as settled;
         // a question about it, or a failure, leaves it outstanding.
         val settled = scope != null &&
@@ -159,10 +168,35 @@ class HaloConversation(
 }
 
 /**
+ * [runCatching] minus the two things it must never swallow.
+ *
+ * `runCatching` catches [Throwable], which is wrong twice over for a network call:
+ *
+ * - **[CancellationException]**. Every call site here runs on a `rememberCoroutineScope`, so
+ *   closing the panel mid-request cancels it. Catching that turns a perfectly ordinary teardown
+ *   into a `Result.failure`, and since the exception is not an [dev.infyplus.halo.ApiException],
+ *   [isConnectivity] then reports it as "no connection" — the cat goes grey and the "Connection
+ *   lost" strip appears on a healthy network. Rethrowing also restores cooperative cancellation,
+ *   which a caught `CancellationException` silently breaks.
+ * - **[Error]**. `OutOfMemoryError` and `NoClassDefFoundError` are not offline. Letting them
+ *   through means the platform crash handlers see them and can say so, rather than every real
+ *   fault in the app being reported to the user as a network problem.
+ */
+inline fun <T> apiCatching(block: () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
+/**
  * Whether a failure was "could not reach the server" rather than "the server refused".
  *
  * [dev.infyplus.halo.ApiException] is only thrown for a non-2xx response, which means we
- * got there — anything else came out of the socket.
+ * got there — anything else came out of the socket. That reasoning only holds because
+ * [apiCatching] has already filtered out cancellation and [Error], which are neither.
  */
-internal fun Throwable.isConnectivity(): Boolean =
+fun Throwable.isConnectivity(): Boolean =
     this !is dev.infyplus.halo.ApiException

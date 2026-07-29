@@ -31,12 +31,37 @@ object AndroidNotifier : Notifier {
     /** Idempotent; safe to call from every entry point (activity, service, receiver). */
     fun attach(context: Context) {
         appContext = context.applicationContext
-        createChannel()
+        installCrashLogger()
+        runCatching { createChannel() }
+            .onFailure { Sync.log("could not create the reminder channel: ${it.message}") }
         Notifications.impl = this
         // Every entry point calls attach, which makes it the one place guaranteed to have a
         // context before anything draws.
         cacheReducedMotion(appContext)
     }
+
+    /**
+     * Log anything that escapes a thread before Android kills the process.
+     *
+     * Hung off [attach] rather than an `Application` subclass because every entry point — the
+     * activity, the overlay service and all three receivers — already calls it, so this is
+     * guaranteed to run first in any process that does anything, with no manifest change.
+     *
+     * The previous handler is still invoked: Android's own is what actually reports the crash, and
+     * replacing it outright would turn a crash into a silent hang.
+     */
+    private fun installCrashLogger() {
+        if (crashLoggerInstalled) return
+        crashLoggerInstalled = true
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            android.util.Log.e("Halo", "unhandled failure on ${thread.name}", error)
+            previous?.uncaughtException(thread, error)
+        }
+    }
+
+    @Volatile
+    private var crashLoggerInstalled = false
 
     private val alarms: AlarmManager
         get() = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -46,9 +71,16 @@ object AndroidNotifier : Notifier {
      *
      * On API 33+ this is granted at install because Halo declares USE_EXACT_ALARM — its core
      * function is reminders. On 31–32 the user may have to grant it in Settings.
+     *
+     * Answers false rather than throwing when no context has been attached yet. This is read by
+     * `PermissionGate`'s checklist, and a setup screen that crashes while reporting what is missing
+     * is worse than one that reports a permission as not-yet-granted.
      */
-    fun canScheduleExact(): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarms.canScheduleExactAlarms()
+    fun canScheduleExact(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+        if (!::appContext.isInitialized) return false
+        return runCatching { alarms.canScheduleExactAlarms() }.getOrDefault(false)
+    }
 
     @SuppressLint("MissingPermission") // guarded by canScheduleExact()
     override fun arm(items: List<Scheduled>) {
@@ -71,15 +103,21 @@ object AndroidNotifier : Notifier {
             val at = parseIsoMillis(item.at!!) ?: continue
             if (at <= now) continue // never replay the past on a device that was asleep
 
-            val pending = pendingIntentFor(item, PendingIntent.FLAG_UPDATE_CURRENT)
-            if (canScheduleExact()) {
-                // ...AndAllowWhileIdle is what makes this fire during Doze rather than being
-                // batched to the next maintenance window.
-                alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
-            } else {
-                // Degraded but not silent: inexact alarms still fire, just not to the minute.
-                alarms.set(AlarmManager.RTC_WAKEUP, at, pending)
-            }
+            // Guarded per item, not per batch. The OS can refuse an individual alarm — the exact
+            // alarm permission revoked between the check above and this line, or the per-app alarm
+            // quota reached — and an unguarded throw would abandon every remaining reminder in the
+            // schedule because of one bad entry.
+            runCatching {
+                val pending = pendingIntentFor(item, PendingIntent.FLAG_UPDATE_CURRENT)
+                if (canScheduleExact()) {
+                    // ...AndAllowWhileIdle is what makes this fire during Doze rather than being
+                    // batched to the next maintenance window.
+                    alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pending)
+                } else {
+                    // Degraded but not silent: inexact alarms still fire, just not to the minute.
+                    alarms.set(AlarmManager.RTC_WAKEUP, at, pending)
+                }
+            }.onFailure { Sync.log("could not arm '${item.title}': ${it::class.simpleName}: ${it.message}") }
         }
         armed = timed.map { it.id }.toSet()
     }
@@ -98,17 +136,20 @@ object AndroidNotifier : Notifier {
      */
     override fun dismissFor(itemId: String) {
         if (!::appContext.isInitialized) return
-        val manager = appContext.getSystemService(NotificationManager::class.java)
-        listOf("due-$itemId", "checkin-$itemId", "cond-$itemId")
-            .forEach { manager.cancel(it.hashCode()) }
+        runCatching {
+            val manager = appContext.getSystemService(NotificationManager::class.java)
+            listOf("due-$itemId", "checkin-$itemId", "cond-$itemId")
+                .forEach { manager.cancel(it.hashCode()) }
+        }
     }
 
     override fun cancelAll() {
+        if (!::appContext.isInitialized) return
         armed.forEach { cancel(it) }
         armed = emptySet()
     }
 
-    private fun cancel(id: String) {
+    private fun cancel(id: String) = runCatching {
         val intent = Intent(appContext, AlarmReceiver::class.java).setAction(id)
         val pending = PendingIntent.getBroadcast(
             appContext,
@@ -152,8 +193,21 @@ object AndroidNotifier : Notifier {
         )
     }
 
-    /** Builds and posts the notification. Called from [AlarmReceiver] when an alarm fires. */
+    /**
+     * Builds and posts the notification. Called from [AlarmReceiver] when an alarm fires.
+     *
+     * Wrapped whole, because every step can refuse on a real device: `notify` throws when
+     * POST_NOTIFICATIONS was denied on API 33+, and the framework rejects an oversized
+     * notification outright. A throw here happens inside a BroadcastReceiver, where it does not
+     * merely lose the reminder — it crashes the process, which the user reads as "Halo keeps
+     * stopping" and has no way to connect to a permission they turned off.
+     */
     fun show(context: Context, item: Scheduled) {
+        runCatching { showOrThrow(context, item) }
+            .onFailure { Sync.log("could not show '${item.title}': ${it::class.simpleName}: ${it.message}") }
+    }
+
+    private fun showOrThrow(context: Context, item: Scheduled) {
         // The pre-due "coming up in 30 minutes" nudge is answered by the thing itself arriving.
         // Leaving both in the shade is two notifications for one event.
         if (item.kind == "due" && item.itemId != null) {

@@ -26,7 +26,9 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import dev.infyplus.halo.ui.HaloPanel
 import dev.infyplus.halo.ui.HaloState
 import dev.infyplus.halo.ui.Orb
+import dev.infyplus.halo.ui.apiCatching
 import dev.infyplus.halo.ui.cloudFor
+import dev.infyplus.halo.ui.isConnectivity
 import dev.infyplus.halo.ui.dialProgress
 import dev.infyplus.halo.ui.isLate
 import kotlinx.coroutines.delay
@@ -75,14 +77,23 @@ fun HaloOverlayRoot(
 
     // The badge counts things wanting a decision; the same poll is the connectivity signal the
     // cat's face reads.
-    LaunchedEffect(Unit) {
+    //
+    // Keyed on the device's network so regaining it restarts this immediately instead of waiting
+    // out the rest of a minute — recovery was the slow half. The guard inside is for the other
+    // direction: with no network there is nothing to ask, and firing a request at a 15-second
+    // timeout once a minute is just a slower way of learning what we already know.
+    LaunchedEffect(DeviceNetwork.available) {
         while (true) {
-            runCatching { api.checkins() }
-                .onSuccess {
-                    state.setUnread(it.attentionCount(), timerRunning = timer.isRunning)
-                    state.markOffline(false)
-                }
-                .onFailure { state.markOffline(true) }
+            if (!DeviceNetwork.available) {
+                state.markOffline(true)
+            } else {
+                apiCatching { api.checkins() }
+                    .onSuccess {
+                        state.setUnread(it.attentionCount(), timerRunning = timer.isRunning)
+                        state.markOffline(false)
+                    }
+                    .onFailure { state.markOffline(it.isConnectivity()) }
+            }
             delay(60_000)
         }
     }

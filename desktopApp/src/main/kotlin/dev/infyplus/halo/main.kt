@@ -17,6 +17,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -25,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toPainter
@@ -32,9 +35,13 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.ApplicationScope
+import androidx.compose.ui.window.LocalWindowExceptionHandlerFactory
 import androidx.compose.ui.window.Notification
 import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowExceptionHandler
+import androidx.compose.ui.window.WindowExceptionHandlerFactory
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberTrayState
@@ -42,10 +49,13 @@ import androidx.compose.ui.window.rememberWindowState
 import dev.infyplus.halo.ui.HaloConversation
 import dev.infyplus.halo.ui.HaloPanel
 import dev.infyplus.halo.ui.HaloState
+import dev.infyplus.halo.ui.HaloTheme
 import dev.infyplus.halo.ui.Orb
 import dev.infyplus.halo.ui.PanelTab
+import dev.infyplus.halo.ui.apiCatching
 import dev.infyplus.halo.ui.cloudFor
 import dev.infyplus.halo.ui.dialProgress
+import dev.infyplus.halo.ui.isConnectivity
 import dev.infyplus.halo.ui.isLate
 import kotlinx.coroutines.delay
 import java.awt.Color as AwtColor
@@ -62,6 +72,52 @@ import java.awt.image.BufferedImage
 private val BUBBLE_SIZE = DpSize(150.dp, 160.dp)
 private val PANEL_SIZE = DpSize(420.dp, 700.dp)
 
+/** One place every unexpected failure is written, so "it just closed" stops being the report. */
+internal fun logCrash(where: String, error: Throwable) {
+    System.err.println("[halo] unhandled failure in $where — the app is staying up")
+    error.printStackTrace()
+}
+
+/**
+ * Keep the window alive when composition throws.
+ *
+ * Compose Desktop's default handler shows a modal dialog and then sends the window a CLOSING event,
+ * so a single bad frame — a stale class, a null nobody expected, a transient state mismatch — takes
+ * the whole assistant down. Halo is a tray app that is supposed to be there all day; a frame that
+ * failed to render is not worth that. This logs and swallows, and the next frame recomposes.
+ *
+ * Deliberately not silent: it prints, and the cat goes Dead, so a persistent fault is visible
+ * rather than looking like the app quietly doing nothing.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+private val KeepRunning = WindowExceptionHandlerFactory { window ->
+    WindowExceptionHandler { error ->
+        logCrash("window '${window.name}'", error)
+        HaloState.shared.flash(dev.infyplus.halo.ui.Expression.Dead, 3000)
+    }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
+fun main() {
+    // Nothing above the UI catches these otherwise: AWT prints the stack trace, kills the event
+    // thread and starts a fresh one, which leaves a window that is up but no longer painting.
+    Thread.setDefaultUncaughtExceptionHandler { thread, error -> logCrash(thread.name, error) }
+
+    // Read before any composition: the setup gate below is decided on the very first frame, and
+    // the JVM store needs no attach step. Guarded because an unreadable preferences store must
+    // land on the setup screen, not on a stack trace before a window exists.
+    runCatching { Config.load() }.onFailure { logCrash("Config.load", it) }
+
+    // So losing wifi greys the cat out in seconds rather than after a request times out.
+    runCatching { startNetworkWatch() }.onFailure { logCrash("startNetworkWatch", it) }
+
+    application {
+        CompositionLocalProvider(LocalWindowExceptionHandlerFactory provides KeepRunning) {
+            Halo()
+        }
+    }
+}
+
 /**
  * Desktop counterpart to the Android floating bubble — the same idea, not a different product:
  * a small always-on-top circle that follows you across apps and opens the panel on click.
@@ -71,11 +127,17 @@ private val PANEL_SIZE = DpSize(420.dp, 700.dp)
  *
  * The tray icon stays as a second way in (and the only way to quit) for when the bubble has
  * been dragged somewhere awkward or is hidden.
+ *
+ * Split out of [main] so the whole application sits inside the [KeepRunning] handler — the
+ * CompositionLocal has to be provided from a composable, and this is what it wraps.
  */
-fun main() = application {
+@Composable
+private fun ApplicationScope.Halo() {
     val timer = Pomodoro.shared
     val halo = HaloState.shared
-    val api = remember { HaloApi(Config.BASE_URL, Config.AUTH_TOKEN) }
+    // Keyed on the credentials so saving new ones in Settings rebuilds this and everything
+    // remembered from it (the conversation) and keyed on it (the effects below).
+    val api = remember(Config.baseUrl, Config.authToken) { HaloApi(Config.baseUrl, Config.authToken) }
 
     // One conversation for both panels. The popup and the main window's Assistant tab are two
     // renderings of the same assistant; letting each remember its own would give you two
@@ -91,14 +153,21 @@ fun main() = application {
     // The badge counts unanswered notifications, and the same poll doubles as the connectivity
     // signal the cat's face reads: whether *our* calls are working, which is not the same
     // question as whether there is wifi.
-    LaunchedEffect(Unit) {
+    // Also keyed on the device's network, so regaining it re-checks the server at once rather than
+    // waiting out the rest of the minute. The guard inside covers the opposite edge: with no
+    // network there is nothing to ask, and a doomed request per minute only burns a timeout.
+    LaunchedEffect(api, DeviceNetwork.available) {
         while (true) {
-            runCatching { api.checkins() }
-                .onSuccess { list ->
-                    halo.setUnread(list.attentionCount(), timerRunning = timer.isRunning)
-                    halo.markOffline(false)
-                }
-                .onFailure { halo.markOffline(true) }
+            if (!DeviceNetwork.available) {
+                halo.markOffline(true)
+            } else {
+                apiCatching { api.checkins() }
+                    .onSuccess { list ->
+                        halo.setUnread(list.attentionCount(), timerRunning = timer.isRunning)
+                        halo.markOffline(false)
+                    }
+                    .onFailure { halo.markOffline(it.isConnectivity()) }
+            }
             delay(60_000)
         }
     }
@@ -135,7 +204,9 @@ fun main() = application {
     // there is no process-death problem to solve as there is on Android.
     val trayState = rememberTrayState()
     val appScope = rememberCoroutineScope()
-    DisposableEffect(Unit) {
+    // Keyed on api: reportFiredTo captures it in the onFired lambda, so new credentials must
+    // rewire it or the server would be told about firings over the old connection.
+    DisposableEffect(api) {
         Notifications.impl = DesktopNotifier
         DesktopNotifier.send = { title, body ->
             trayState.sendNotification(Notification(title, body, Notification.Type.Info))
@@ -158,7 +229,7 @@ fun main() = application {
     }
 
     // Cadence is shared with Android now — see Sync.EVERY_MILLIS for why it is a minute.
-    LaunchedEffect(Unit) { Sync.loop(api) }
+    LaunchedEffect(Unit) { Sync.loop() }
 
     Tray(
         state = trayState,
@@ -174,6 +245,23 @@ fun main() = application {
             Item("Quit") { exitApplication() }
         },
     )
+
+    // Below the Tray so the application scope still has something keeping it alive, and above
+    // everything else so one return covers the banner, the app window and the bubble.
+    //
+    // Closing quits rather than hiding: the return below means the tray's "Open Halo" window is
+    // never composed while unconfigured, so a merely-hidden setup window would strand the app in
+    // the tray with no way back to it.
+    if (!Config.isConfigured) {
+        Window(
+            onCloseRequest = ::exitApplication,
+            state = rememberWindowState(size = DpSize(560.dp, 520.dp)),
+            title = "Halo — Setup",
+        ) {
+            HaloTheme { Surface(Modifier.fillMaxSize()) { SettingsScreen() } }
+        }
+        return
+    }
 
     BannerWindow(api = api, onOpenPanel = { hidden = false; expanded = true })
 
@@ -192,7 +280,7 @@ fun main() = application {
         }
     }
 
-    if (hidden) return@application
+    if (hidden) return
 
     val state = rememberWindowState(
         size = BUBBLE_SIZE,
@@ -369,8 +457,20 @@ fun main() = application {
  *
  * AWT reports these bounds in logical points, which is the same unit Compose Desktop uses for
  * window position and size, so no density conversion is involved.
+ *
+ * Every AWT call here can fail — `HeadlessException`, or a display that was unplugged between the
+ * drag starting and this running. None of that is worth a crash: the fallback is the position the
+ * caller asked for, which is at worst a window slightly off the edge of a screen the user is
+ * already rearranging.
  */
-private fun clampToScreen(position: WindowPosition.Absolute, size: DpSize): WindowPosition {
+private fun clampToScreen(position: WindowPosition.Absolute, size: DpSize): WindowPosition =
+    runCatching { clampToScreenOrThrow(position, size) }
+        .getOrElse {
+            logCrash("clampToScreen", it)
+            position
+        }
+
+private fun clampToScreenOrThrow(position: WindowPosition.Absolute, size: DpSize): WindowPosition {
     val screens = GraphicsEnvironment.getLocalGraphicsEnvironment().screenDevices
     val x = position.x.value
     val y = position.y.value

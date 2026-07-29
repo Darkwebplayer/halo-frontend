@@ -29,7 +29,7 @@ import dev.infyplus.halo.ui.HaloState
 import dev.infyplus.halo.ui.HaloTab
 import dev.infyplus.halo.ui.HaloTheme
 
-enum class AppSection { Today, Focus, Assistant }
+enum class AppSection { Today, Focus, Assistant, Settings }
 
 /**
  * The app proper, as opposed to the overlay: the same three things the popup can do, with room to
@@ -42,12 +42,17 @@ enum class AppSection { Today, Focus, Assistant }
 @Composable
 @Preview
 fun App(
-    api: HaloApi = remember { HaloApi(Config.BASE_URL, Config.AUTH_TOKEN) },
+    api: HaloApi = remember { HaloApi(Config.baseUrl, Config.authToken) },
     /**
      * Hoisted by the desktop host so the main window and the popup share one transcript. Left to
      * its default on Android, where only one panel is ever mounted at a time.
      */
     conversation: HaloConversation = remember(api) { HaloConversation(api, HaloState.shared) },
+    /**
+     * Fired after new credentials are saved, for hosts holding a [HaloApi] that Compose cannot
+     * rebuild for them — on Android, the one the overlay service closed over.
+     */
+    onCredentialsChanged: () -> Unit = {},
 ) {
     var section by remember { mutableStateOf(AppSection.Today) }
 
@@ -80,6 +85,11 @@ fun App(
                         conversation = conversation,
                         showClose = false,
                     )
+                    AppSection.Settings -> Column(
+                        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                    ) {
+                        SettingsScreen(onSaved = onCredentialsChanged)
+                    }
                 }
             }
         }

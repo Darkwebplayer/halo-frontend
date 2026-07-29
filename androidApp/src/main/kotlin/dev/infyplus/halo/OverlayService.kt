@@ -61,19 +61,33 @@ class OverlayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // First, so its crash logger is installed before anything below can fail. The service is
+        // already alive for the overlay, which also makes it the natural place to keep the armed
+        // schedule fresh and to evaluate weather conditions. Alarms themselves are held by the OS,
+        // so nothing is lost if this service is killed — it just stops re-syncing.
+        AndroidNotifier.attach(this)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        startForeground(NOTIFICATION_ID, buildNotification())
+
+        // Android 12+ refuses a foreground start from the background outright
+        // (ForegroundServiceStartNotAllowedException). Without a foreground notification this
+        // service will be killed shortly anyway, so bow out rather than crash — PermissionGate
+        // starts us again on the next resume, from the foreground, where it is allowed.
+        val foreground = runCatching { startForeground(NOTIFICATION_ID, buildNotification()) }
+        if (foreground.isFailure) {
+            Sync.log("foreground start refused: ${foreground.exceptionOrNull()?.message}")
+            stopSelf()
+            return
+        }
         showOverlay()
 
-        // The service is already alive for the overlay, so it is the natural place to keep the
-        // armed schedule fresh and to evaluate weather conditions. Alarms themselves are held by
-        // the OS, so nothing is lost if this service is killed — it just stops re-syncing.
-        AndroidNotifier.attach(this)
         // The overlay is often running with no activity alive, so the timer's settings and its
         // phase-end notifications have to be wired here too. Both calls are idempotent.
         attachSettings(this)
+        Config.load()
+        // After attachSettings, which is what supplies the context this needs.
+        startNetworkWatch()
         wirePomodoro()
-        val api = HaloApi(Config.BASE_URL, Config.AUTH_TOKEN)
+        val api = HaloApi(Config.baseUrl, Config.authToken)
         // Covers the condition-watcher path, which fires through Notifications rather than an
         // alarm. Alarms report from AlarmReceiver instead, where goAsync can hold the process
         // open for the call.
@@ -90,7 +104,7 @@ class OverlayService : Service() {
         // Nothing is lost when it does, because alarms that are already armed are held by the OS
         // (setExactAndAllowWhileIdle) and BootReceiver re-arms after a restart. The loop only has
         // to run often enough to learn about *new* work.
-        syncScope.launch { Sync.loop(api) }
+        syncScope.launch { Sync.loop() }
     }
 
     private val density get() = resources.displayMetrics.density
@@ -116,7 +130,7 @@ class OverlayService : Service() {
             y = dp(240)
         }
 
-        val api = HaloApi(Config.BASE_URL, Config.AUTH_TOKEN)
+        val api = HaloApi(Config.baseUrl, Config.authToken)
         val composeView = ComposeView(this).apply {
             setContent {
                 HaloOverlayRoot(
@@ -130,7 +144,17 @@ class OverlayService : Service() {
             }
         }
         host.attach(composeView)
-        windowManager.addView(composeView, params)
+        // The permission was checked above, but `canDrawOverlays` and `addView` are not one atomic
+        // step — revoking it in between throws BadTokenException, and an unguarded throw in
+        // onCreate takes the process down rather than the window. There is nothing to run without
+        // a window, so stop cleanly and let PermissionGate ask for the permission again.
+        val added = runCatching { windowManager.addView(composeView, params) }
+        if (added.isFailure) {
+            Sync.log("overlay window refused: ${added.exceptionOrNull()?.message}")
+            host.detach()
+            stopSelf()
+            return
+        }
         view = composeView
 
         showBanner(api)

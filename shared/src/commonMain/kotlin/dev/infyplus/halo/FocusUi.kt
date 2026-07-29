@@ -36,6 +36,7 @@ import dev.infyplus.halo.ui.HaloShapes
 import dev.infyplus.halo.ui.HaloState
 import dev.infyplus.halo.ui.Mono
 import dev.infyplus.halo.ui.ProgressDial
+import dev.infyplus.halo.ui.apiCatching
 import dev.infyplus.halo.ui.dialProgress
 import dev.infyplus.halo.ui.isLate
 import kotlinx.coroutines.delay
@@ -233,7 +234,7 @@ fun FocusScreen(
                     // The one place the timer touches the server, and only because you asked.
                     HaloChip("Mark done") {
                         scope.launch {
-                            runCatching { api.act(taskId, "done") }
+                            apiCatching { api.act(taskId, "done") }
                                 .onSuccess { timer.attach(null); HaloState.shared.flash(Expression.Happy, 1600) }
                                 .onFailure { error = it.message ?: "Could not mark it done" }
                         }
@@ -252,7 +253,7 @@ fun FocusScreen(
                             // /plan already excludes completed items server-side; the filter is
                             // here so a task finished in this session cannot linger in the list.
                             // Blank as well as null, since an empty string is not an absent field.
-                            runCatching { api.plan() }
+                            apiCatching { api.plan() }
                                 .onSuccess { p -> tasks = (p.rollover + p.today).filter { it.doneAt.isNullOrBlank() } }
                                 .onFailure { error = it.message ?: "Could not load your plan" }
                         }

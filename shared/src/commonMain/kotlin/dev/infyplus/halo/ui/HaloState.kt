@@ -68,6 +68,19 @@ class HaloState(
         }
     }
 
+    /**
+     * Drop a held reaction and fall straight back to the resting face.
+     *
+     * [flash] is also used for reactions with no natural end — the 30-second Wait that a send holds
+     * "until the reply lands". If that send never lands normally (the panel was closed mid-flight),
+     * nothing replaces it, and on desktop the orb outlives the panel: the cat would sit there
+     * waiting for half a minute on a conversation that no longer exists.
+     */
+    fun clearFlash() {
+        flashJob?.cancel()
+        flashed = null
+    }
+
     fun setTimerRunning(running: Boolean) {
         // Only Work and Idle trade places here; a pending notification outranks both.
         if (unread > 0) return

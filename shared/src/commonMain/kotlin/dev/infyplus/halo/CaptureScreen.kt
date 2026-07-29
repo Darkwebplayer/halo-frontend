@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import dev.infyplus.halo.ui.HaloButton
+import dev.infyplus.halo.ui.apiCatching
 import kotlinx.coroutines.launch
 
 /**
@@ -37,7 +38,7 @@ import kotlinx.coroutines.launch
  * Slice 5 re-hosts this composable inside the always-available overlay unchanged.
  */
 @Composable
-fun CaptureScreen(api: HaloApi = remember { HaloApi(Config.BASE_URL, Config.AUTH_TOKEN) }) {
+fun CaptureScreen(api: HaloApi = remember { HaloApi(Config.baseUrl, Config.authToken) }) {
     var input by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -48,7 +49,7 @@ fun CaptureScreen(api: HaloApi = remember { HaloApi(Config.BASE_URL, Config.AUTH
     val scope = rememberCoroutineScope()
 
     suspend fun refresh() {
-        runCatching { api.plan() }
+        apiCatching { api.plan() }
             .onSuccess { plan = it }
             .onFailure { error = it.message }
     }
@@ -62,15 +63,20 @@ fun CaptureScreen(api: HaloApi = remember { HaloApi(Config.BASE_URL, Config.AUTH
         scope.launch {
             busy = true
             error = null
-            runCatching { action(text) }
-                .onSuccess { input = "" }
-                .onFailure {
-                    // Nothing partial is left on screen: a failed call shows an error only.
-                    captured = null
-                    answer = null
-                    error = it.message ?: "Something went wrong"
-                }
-            busy = false
+            // try/finally: `busy` disables both buttons, so a cancellation escaping here would
+            // leave the screen permanently unusable.
+            try {
+                apiCatching { action(text) }
+                    .onSuccess { input = "" }
+                    .onFailure {
+                        // Nothing partial is left on screen: a failed call shows an error only.
+                        captured = null
+                        answer = null
+                        error = it.message ?: "Something went wrong"
+                    }
+            } finally {
+                busy = false
+            }
         }
     }
 

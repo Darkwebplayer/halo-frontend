@@ -9,9 +9,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -24,6 +21,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import dev.infyplus.halo.ui.HaloButton
+import dev.infyplus.halo.ui.HaloCard
+import dev.infyplus.halo.ui.HaloChip
+import dev.infyplus.halo.ui.HaloPalette
+import dev.infyplus.halo.ui.Mono
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -56,7 +59,12 @@ fun PermissionGate(content: @Composable () -> Unit) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val statuses = remember(checked) { REQUIREMENTS.map { it to it.satisfied(context) } }
+    // Each probe touches a different system service, and a device that answers one of them with an
+    // exception must not take the checklist down — this is the screen that explains how to fix
+    // things. An unanswerable requirement counts as unsatisfied, which is the safe reading.
+    val statuses = remember(checked) {
+        REQUIREMENTS.map { it to runCatching { it.satisfied(context) }.getOrDefault(false) }
+    }
     val blocking = statuses.filter { (req, ok) -> req.required && !ok }
 
     // Something required was revoked after setup — go back to the checklist rather than
@@ -73,73 +81,115 @@ fun PermissionGate(content: @Composable () -> Unit) {
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        modifier = Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("Before we start", style = MaterialTheme.typography.headlineSmall)
+        // Deliberately the same heading weights as SetupGate: this screen follows it immediately
+        // on a fresh install, and the two reading as one flow is the whole point.
+        Text(
+            "Before we start",
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Bold,
+            color = HaloPalette.ink,
+        )
         Text(
             "Halo needs a few things to work the way it's meant to. " +
                 "You'll be sent to Settings and come back here.",
-            style = MaterialTheme.typography.bodyMedium,
+            fontSize = 14.sp,
+            color = HaloPalette.navy.copy(alpha = 0.8f),
         )
 
         statuses.forEach { (req, ok) -> RequirementCard(req, ok, context) }
 
         val optionalPending = statuses.count { (req, ok) -> !req.required && !ok }
-        Text(
+        Mono(
             when {
                 blocking.isNotEmpty() ->
-                    "Grant the ${blocking.size} required item${if (blocking.size == 1) "" else "s"} above to continue."
+                    "GRANT THE ${blocking.size} REQUIRED ITEM${if (blocking.size == 1) "" else "S"} ABOVE TO CONTINUE"
                 optionalPending > 0 ->
-                    "Ready. The $optionalPending optional item${if (optionalPending == 1) "" else "s"} " +
-                        "above can be granted now — you won't be asked again."
-                else -> "Everything's set."
+                    "READY · $optionalPending OPTIONAL ITEM${if (optionalPending == 1) "" else "S"} STILL OPEN"
+                else -> "EVERYTHING'S SET"
             },
-            style = MaterialTheme.typography.bodySmall,
+            color = if (blocking.isNotEmpty()) HaloPalette.warm else HaloPalette.navy.copy(alpha = 0.78f),
+            weight = FontWeight.Bold,
         )
 
-        Button(
-            onClick = {
-                prefs.edit().putBoolean(KEY_SETUP_DONE, true).apply()
-                started = true
-            },
-            enabled = blocking.isEmpty(),
+        HaloButton(
+            label = "Get started",
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("Get started") }
+            enabled = blocking.isEmpty(),
+        ) {
+            prefs.edit().putBoolean(KEY_SETUP_DONE, true).apply()
+            started = true
+        }
     }
 }
 
 private const val KEY_SETUP_DONE = "setup_done"
 
+/**
+ * Open a settings screen, falling back to this app's own details page.
+ *
+ * Not every OEM ships every screen these intents name — `ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS`
+ * in particular is missing on a fair number of devices — and an `ActivityNotFoundException` here
+ * crashes the app from the one screen whose whole job is telling the user how to make it work. The
+ * app details page always exists and holds all of these permissions, so it is a real fallback and
+ * not just a way of not crashing.
+ */
+private fun Context.openSettings(intent: android.content.Intent) {
+    runCatching { startActivity(intent) }.getOrElse {
+        runCatching {
+            startActivity(
+                android.content.Intent(
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.parse("package:$packageName"),
+                ),
+            )
+        }
+    }
+}
+
 @Composable
 private fun RequirementCard(req: Requirement, satisfied: Boolean, context: Context) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+    // A satisfied item recedes: the point of the list is what is still outstanding, and four
+    // identical cards make the one you have to act on harder to find.
+    HaloCard(
+        modifier = Modifier.fillMaxWidth(),
+        tint = if (satisfied) HaloPalette.cream else HaloPalette.body.copy(alpha = 0.16f),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(if (satisfied) "✓" else "•", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    req.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                if (!req.required) {
-                    Text("optional", style = MaterialTheme.typography.labelSmall)
-                }
-            }
+            Text(
+                if (satisfied) "✓" else "•",
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (satisfied) HaloPalette.sun else HaloPalette.warm,
+            )
+            Text(
+                req.title,
+                modifier = Modifier.weight(1f),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = HaloPalette.ink,
+            )
+            if (!req.required) Mono("OPTIONAL")
+        }
 
-            if (!satisfied) {
-                Text(req.why, style = MaterialTheme.typography.bodySmall)
+        if (!satisfied) {
+            Text(
+                req.why,
+                modifier = Modifier.padding(top = 6.dp),
+                fontSize = 13.sp,
+                color = HaloPalette.navy.copy(alpha = 0.75f),
+            )
 
-                val intent = req.fix(context)
-                if (intent != null) {
-                    Button(onClick = { context.startActivity(intent) }) { Text("Open settings") }
+            val intent = req.fix(context)
+            if (intent != null) {
+                Row(Modifier.padding(top = 8.dp)) {
+                    HaloChip("Open settings") { context.openSettings(intent) }
                 }
             }
         }

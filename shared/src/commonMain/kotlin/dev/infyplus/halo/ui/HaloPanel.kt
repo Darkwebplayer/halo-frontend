@@ -88,7 +88,7 @@ fun HaloPanel(
     }
 
     suspend fun refreshCheckins() {
-        runCatching { api.checkins() }
+        apiCatching { api.checkins() }
             .onSuccess { checkins = it; state.setUnread(it.attentionCount()) ; state.markOffline(false) }
             .onFailure { state.markOffline(it.isConnectivity()) }
     }
@@ -176,7 +176,7 @@ fun HaloPanel(
                 conversation.scope?.let { item ->
                     ScopedCard(item) { verb ->
                         scope.launch {
-                            runCatching { api.act(item.id, verb) }
+                            apiCatching { api.act(item.id, verb) }
                                 .onSuccess {
                                     // The notification about it is now stale wherever it shows.
                                     dev.infyplus.halo.Notifications.dismissFor(item.id)

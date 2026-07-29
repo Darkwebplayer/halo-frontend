@@ -18,15 +18,30 @@ class MainActivity : ComponentActivity() {
         // Either this or the overlay service can be the first thing the user reaches, so both
         // attach the settings store and wire the timer. Both are idempotent.
         attachSettings(this)
+        Config.load()
+        // After attachSettings, which is what supplies the context this needs. Idempotent, so the
+        // overlay service starting it too costs nothing.
+        startNetworkWatch()
         wirePomodoro()
         openScopeFrom(intent)
 
         setContent {
-            // Setup checklist first; it starts the overlay service once everything required
-            // is in place, then gets out of the way. App() supplies HaloTheme itself; the gate
-            // needs it too, so it is wrapped here.
+            // Credentials, then permissions, then the app. That order matters: PermissionGate is
+            // the only thing that starts OverlayService, and the sync loop lives in that service —
+            // so gating it behind SetupGate keeps an unconfigured install off the network without
+            // inventing a second stop condition.
             HaloTheme {
-                PermissionGate { App() }
+                SetupGate {
+                    PermissionGate {
+                        App(onCredentialsChanged = {
+                            // The overlay holds a HaloApi built in onCreate that no Compose state
+                            // can reach. Restarting is racy on its own, but PermissionGate calls
+                            // start() again on every resume, so it settles.
+                            OverlayService.stop(this)
+                            OverlayService.start(this)
+                        })
+                    }
+                }
             }
         }
     }

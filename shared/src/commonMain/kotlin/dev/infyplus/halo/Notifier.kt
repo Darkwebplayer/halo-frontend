@@ -1,5 +1,6 @@
 package dev.infyplus.halo
 
+import dev.infyplus.halo.ui.apiCatching
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -106,7 +107,7 @@ fun reportFiredTo(
         state.showHeadsUp(item)
 
         scope.launch {
-            runCatching { api.reportFired(item.id, item.itemId) }
+            apiCatching { api.reportFired(item.id, item.itemId) }
                 .onFailure { Sync.log("could not report '${item.title}' as fired: ${it.message}") }
         }
     }

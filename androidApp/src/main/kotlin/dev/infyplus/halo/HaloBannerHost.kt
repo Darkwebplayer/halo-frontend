@@ -8,6 +8,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.infyplus.halo.ui.HaloState
 import dev.infyplus.halo.ui.HeadsUpBanner
+import dev.infyplus.halo.ui.apiCatching
+import dev.infyplus.halo.ui.isConnectivity
 import kotlinx.coroutines.launch
 
 /**
@@ -37,7 +39,7 @@ fun HaloBannerHost(
             state.dismissHeadsUp()
             val itemId = notification.itemId ?: return@HeadsUpBanner
             scope.launch {
-                runCatching { api.act(itemId, verb) }
+                apiCatching { api.act(itemId, verb) }
                     .onSuccess {
                         Notifications.dismissFor(itemId)
                         // Acting answers every open check-in for that item server-side, so the
@@ -49,7 +51,9 @@ fun HaloBannerHost(
                             1600,
                         )
                     }
-                    .onFailure { state.markOffline(true) }
+                    // Only a failure to *reach* the server is offline. A refusal means we got
+                    // there, and greying the cat out for it would blame the wrong thing.
+                    .onFailure { state.markOffline(it.isConnectivity()) }
             }
         },
         onDismiss = { state.dismissHeadsUp() },

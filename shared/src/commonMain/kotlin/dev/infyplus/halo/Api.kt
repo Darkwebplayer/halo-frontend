@@ -26,7 +26,7 @@ class ApiException(message: String) : Exception(message)
 class HaloApi(
     private val baseUrl: String,
     private val authToken: String,
-    private val client: HttpClient = defaultClient(),
+    private val client: HttpClient = sharedClient,
 ) {
     /** Parses free text into a structured item and persists it. Throws if the server refuses. */
     suspend fun parse(text: String): Item = call {
@@ -161,6 +161,21 @@ private fun HttpStatusCode.isSuccess() = value in 200..299
 
 private suspend fun io.ktor.client.statement.HttpResponse.errorMessage(): String =
     runCatching { body<ApiError>().error }.getOrElse { "HTTP ${status.value}" }
+
+/**
+ * One client for the whole process.
+ *
+ * [HaloApi] is deliberately cheap to construct and gets rebuilt often — Compose rebuilds it whenever
+ * credentials change, `Sync.loop` builds a fresh one every minute so it cannot go on talking to an
+ * old server, and every broadcast receiver builds its own. Each of those used to bring a new engine
+ * with its own connection pool and threads, and nothing ever closed them: a tray app left running
+ * for a day accumulated well over a thousand, which ends in thread or file-descriptor exhaustion.
+ *
+ * Nothing here is per-account — credentials travel on the request, not the client — so sharing one
+ * costs nothing and the leak goes away. It is intentionally never closed: it lives as long as the
+ * process, which is exactly the lifetime it wants.
+ */
+private val sharedClient by lazy { defaultClient() }
 
 private fun defaultClient() = HttpClient {
     install(ContentNegotiation) {

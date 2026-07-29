@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Read-only, granted at install. Lets the app be told the moment the device loses or
+         regains a network, instead of discovering it when a request times out. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Floating button. Must be granted by hand in Settings; cannot be requested inline. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

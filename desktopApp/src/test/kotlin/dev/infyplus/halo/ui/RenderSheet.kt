@@ -20,6 +20,7 @@ import dev.infyplus.halo.FocusScreen
 import dev.infyplus.halo.Item
 import dev.infyplus.halo.HaloApi
 import dev.infyplus.halo.Pomodoro
+import dev.infyplus.halo.SetupGate
 import dev.infyplus.halo.PomodoroStrip
 import java.io.File
 import kotlin.test.Test
@@ -166,6 +167,17 @@ class RenderSheet {
 
         write("strip-break", inner, 160) {
             Box(Modifier.padding(16.dp)) { PomodoroStrip(pinnedOnBreak()) }
+        }
+    }
+
+    /**
+     * The first thing a new install shows. Rendered at the desktop setup window's own size, since
+     * that is the smallest surface it has to fit.
+     */
+    @Test
+    fun rendersTheSetupScreen() {
+        write("setup-screen", (560 * DENSITY).toInt(), (520 * DENSITY).toInt()) {
+            HaloTheme { SetupGate {} }
         }
     }
 
