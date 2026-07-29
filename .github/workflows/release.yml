@@ -1,0 +1,281 @@
+# Release pipeline for Halo, the Compose Multiplatform client.
+#
+# Compose Desktop cannot cross-compile — jpackage targets the machine it runs on — so each desktop
+# format needs its own runner. That constraint is the shape of the whole file.
+#
+# Cutting a release:  git tag v1.2.3 && git push origin v1.2.3
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, without the leading v (e.g. 1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  # Everything depends on this. Publishing without running the suite is how a build that dies on
+  # its first network call reaches users.
+  # ---------------------------------------------------------------------------------------------
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve version
+        id: version
+        # Stripping the leading "v" is required, not cosmetic: both MSI and DMG reject a package
+        # version that does not start with a digit.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building Halo $version"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+
+      - run: ./gradlew :shared:allTests --console=plain
+
+  # ---------------------------------------------------------------------------------------------
+  # Android. ubuntu-latest ships the Android SDK, so there is no setup-android step to go stale.
+  # ---------------------------------------------------------------------------------------------
+  android:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Restore keystore
+        # Written outside the workspace so no glob or stray `git add` can ever pick it up.
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not set — the APK would be unsigned and refuse to install."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/halo.jks"
+
+      - name: Build release APK
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/halo.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew :androidApp:assembleRelease -PhaloVersion=${{ needs.verify.outputs.version }} --console=plain
+
+      - name: Name it after the app
+        run: |
+          apk=$(find androidApp/build/outputs/apk/release -name "*.apk" | head -1)
+          test -n "$apk" || { echo "::error::no APK produced"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/out"
+          cp "$apk" "$RUNNER_TEMP/out/Halo-${{ needs.verify.outputs.version }}.apk"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: halo-apk
+          path: ${{ runner.temp }}/out/*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------------------------
+  # Desktop. One runner per format, because jpackage cannot target another OS.
+  #
+  # macos-15 is Apple Silicon; macos-15-intel is how x86_64 is reached now that macos-13 is retired.
+  # Intel runners disappear in Fall 2027, at which point the Intel half of the cask goes with them.
+  # ---------------------------------------------------------------------------------------------
+  desktop:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            task: packageDmg
+            format: dmg
+            suffix: arm64
+          - os: macos-15-intel
+            task: packageDmg
+            format: dmg
+            suffix: x64
+          - os: windows-latest
+            task: packageMsi
+            format: msi
+            suffix: x64
+          - os: ubuntu-latest
+            task: packageDeb
+            format: deb
+            suffix: amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17" # jpackage needs 17+; the modules still emit JVM 11 bytecode.
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Package
+        # Deliberately packageDmg/Msi/Deb, NOT the packageRelease* variants. Those run ProGuard,
+        # which strips the reflection kotlinx.serialization and ktor rely on — and every model and
+        # every network call in this app goes through both. Switching means writing keep rules and
+        # testing a packaged build first, not flipping a task name.
+        #
+        # On macOS the build also ad-hoc signs the .app between the app image and the dmg (see
+        # desktopApp/build.gradle.kts). That is not decoration: arm64 macOS will not execute an
+        # unsigned binary at all, and jpackage leaves its output unsigned.
+        env:
+          MACOS_SIGN: ${{ secrets.MACOS_SIGN }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARIZATION_APPLE_ID: ${{ secrets.NOTARIZATION_APPLE_ID }}
+          NOTARIZATION_PASSWORD: ${{ secrets.NOTARIZATION_PASSWORD }}
+          NOTARIZATION_TEAM_ID: ${{ secrets.NOTARIZATION_TEAM_ID }}
+        run: ./gradlew :desktopApp:${{ matrix.task }} -PhaloVersion=${{ needs.verify.outputs.version }} --console=plain
+
+      - name: Check the macOS bundle is signed
+        # Cheap guard on the one failure that is invisible until a user on an Apple Silicon Mac
+        # double-clicks and gets nothing. An unsigned arm64 build must never reach a release.
+        if: startsWith(matrix.os, 'macos')
+        run: codesign --verify --deep --strict desktopApp/build/compose/binaries/main/app/Halo.app
+
+      - name: Tag the artifact with its architecture
+        # Both Mac runners emit an identically named Halo-<ver>.dmg, so without this the second
+        # upload collides with the first. The cask's #{arch} resolves to exactly these suffixes,
+        # so they are load-bearing rather than cosmetic.
+        shell: bash
+        run: |
+          built=$(find desktopApp/build/compose/binaries/main -name "*.${{ matrix.format }}" | head -1)
+          test -n "$built" || { echo "::error::no .${{ matrix.format }} produced"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/out"
+          cp "$built" "$RUNNER_TEMP/out/Halo-${{ needs.verify.outputs.version }}-${{ matrix.suffix }}.${{ matrix.format }}"
+          ls -lh "$RUNNER_TEMP/out"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: halo-${{ matrix.format }}-${{ matrix.suffix }}
+          path: ${{ runner.temp }}/out/*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------------------------
+  # Publish, and generate the Homebrew cask to commit into Darkwebplayer/homebrew-halo.
+  # ---------------------------------------------------------------------------------------------
+  release:
+    needs: [verify, android, desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate the Homebrew cask
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          REPO: ${{ github.repository }}
+        # The heredoc body is unindented on purpose: <<RUBY preserves leading whitespace, and
+        # <<-RUBY only strips tabs. Indenting it would ship a cask indented by ten columns.
+        run: |
+          cd artifacts
+          arm_sha=$(sha256sum "Halo-$VERSION-arm64.dmg" | cut -d' ' -f1)
+          intel_sha=$(sha256sum "Halo-$VERSION-x64.dmg" | cut -d' ' -f1)
+          cat > halo.rb <<RUBY
+          cask "halo" do
+            arch arm: "arm64", intel: "x64"
+
+            version "$VERSION"
+            sha256 arm:   "$arm_sha",
+                   intel: "$intel_sha"
+
+            url "https://github.com/$REPO/releases/download/v#{version}/Halo-#{version}-#{arch}.dmg"
+            name "Halo"
+            desc "Floating assistant that captures what you say and reminds you later"
+            homepage "https://github.com/$REPO"
+
+            app "Halo.app"
+
+            # Halo is ad-hoc signed but not notarized. The ad-hoc signature is what lets it execute
+            # on Apple Silicon; the only thing left blocking it is the quarantine flag Homebrew puts
+            # on the download, which this clears. Without it the app opens to "Halo is damaged and
+            # can't be opened", which it is not.
+            #
+            # If a future Homebrew drops postflight, the README documents the same command by hand.
+            postflight do
+              system_command "/usr/bin/xattr",
+                             args: ["-dr", "com.apple.quarantine", "#{appdir}/Halo.app"]
+            end
+
+            zap trash: [
+              "~/Library/Preferences/dev.infyplus.halo.plist",
+            ]
+          end
+          RUBY
+          echo '--- commit this as Casks/halo.rb in Darkwebplayer/homebrew-halo ---'
+          cat halo.rb
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ needs.verify.outputs.version }}
+          name: Halo ${{ needs.verify.outputs.version }}
+          generate_release_notes: true
+          files: artifacts/*
+          body: |
+            ## Install
+
+            **macOS** — Apple Silicon and Intel
+            ```
+            brew tap Darkwebplayer/halo
+            brew install --cask halo
+            ```
+
+            **Windows**
+            ```
+            winget install Infyplus.Halo
+            ```
+
+            **Android** — download the `.apk` below and allow installs from your browser.
+
+            > macOS builds are ad-hoc signed but not notarized. The cask clears the quarantine flag
+            > for you. If you install the `.dmg` by hand instead, run this once afterwards:
+            > `xattr -dr com.apple.quarantine /Applications/Halo.app`
+
+  # ---------------------------------------------------------------------------------------------
+  # winget. Only ever *updates* a package already in microsoft/winget-pkgs — the first version must
+  # be submitted by hand with `wingetcreate new`, and Darkwebplayer needs a fork of winget-pkgs.
+  # Non-fatal so a missing token cannot fail a release that has already published.
+  # ---------------------------------------------------------------------------------------------
+  winget:
+    needs: [verify, release]
+    runs-on: windows-latest
+    # Off until you are ready: set repository variable PUBLISH_WINGET to "true" in
+    # Settings → Secrets and variables → Actions → Variables. Left wired rather than deleted so
+    # turning it on is one switch. The .msi is built and attached to the release either way.
+    if: vars.PUBLISH_WINGET == 'true'
+    continue-on-error: true
+    steps:
+      - uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: Infyplus.Halo
+          version: ${{ needs.verify.outputs.version }}
+          installers-regex: '\.msi$'
+          # Must be a *classic* PAT with public_repo scope; fine-grained tokens are unsupported.
+          token: ${{ secrets.WINGET_TOKEN }}

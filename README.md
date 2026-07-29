@@ -45,9 +45,8 @@ A `.deb` is attached to each release: `sudo dpkg -i Halo-<version>-amd64.deb`.
 
 ## Releasing
 
-Releases are cut by pushing a tag; [`.github/workflows/release.yml`](../.github/workflows/release.yml)
-does the rest. The workflow lives at the repository root because GitHub only reads
-`.github/workflows/` there.
+Releases are cut by pushing a tag; [`.github/workflows/release.yml`](./.github/workflows/release.yml)
+does the rest.
 
 ```
 git tag v1.2.3 && git push origin v1.2.3

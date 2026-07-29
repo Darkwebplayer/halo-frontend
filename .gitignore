@@ -17,3 +17,13 @@ captures
 !*.xcworkspace/contents.xcworkspacedata
 **/xcshareddata/WorkspaceSettings.xcsettings
 node_modules/
+
+# Per-machine tool permissions, not a project setting.
+.claude/settings.local.json
+
+# Signing material never belongs in the repo. The Android keystore lives outside it and reaches
+# CI as the ANDROID_KEYSTORE_BASE64 secret; these patterns are a backstop against a stray copy.
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
