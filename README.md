@@ -6,10 +6,13 @@ This is a Kotlin Multiplatform project targeting Android, Desktop (JVM).
 
 ```
 brew tap Darkwebplayer/halo
+brew trust darkwebplayer/halo
 brew install --cask halo
 ```
 
-Homebrew 6.0 asks you to trust a third-party tap the first time; accept the prompt.
+The `brew trust` line is not optional. Homebrew 6.0 refuses to load a cask from a third-party tap
+until you trust it explicitly — a tap can contain arbitrary unsandboxed Ruby, so brew makes you opt
+in once per tap. Without it, `install` fails with *"Refusing to load cask … from untrusted tap"*.
 
 **If you install the `.dmg` by hand instead**, macOS will say *"Halo is damaged and can't be
 opened"* on first launch. It is not damaged. Halo is ad-hoc signed but not

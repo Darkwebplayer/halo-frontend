@@ -273,8 +273,12 @@ jobs:
             **macOS** — Apple Silicon and Intel
             ```
             brew tap Darkwebplayer/halo
+            brew trust darkwebplayer/halo
             brew install --cask halo
             ```
+
+            The `brew trust` step is required: Homebrew 6.0 refuses to load a cask from a
+            third-party tap until you opt in once.
 
             **Windows**
             ```
