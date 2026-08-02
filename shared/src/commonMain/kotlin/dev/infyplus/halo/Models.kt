@@ -1,5 +1,6 @@
 package dev.infyplus.halo
 
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
@@ -125,6 +126,21 @@ data class Summary(
      * "show the counts instead" rather than as an error.
      */
     val description: String = "",
+    /**
+     * Which occurrence [description] actually describes, as `2026-08-02:morning`.
+     *
+     * Not always the current one. Before the user's own summary time the most recent elapsed
+     * occurrence is yesterday's, and the server serves what it saved rather than writing a fresh
+     * description of a day that is already over — so this is how the card knows whose day it is
+     * showing. Null when nothing has ever been written.
+     */
+    @SerialName("summary_for") val summaryFor: String? = null,
+    /**
+     * Whether [description] is today's, and therefore whether rewriting it is a thing that can be
+     * asked for. Defaults false, so a server that predates this field offers no Refresh rather
+     * than offering one that would 409.
+     */
+    @SerialName("summary_fresh") val summaryFresh: Boolean = false,
     val date: String = "",
     @SerialName("as_of") val asOf: String = "",
     val today: List<Item> = emptyList(),
@@ -329,9 +345,34 @@ data class Profile(
     @SerialName("evening_summary_time") val eveningSummaryTime: String = "20:00",
     /** Which face the orb wears. Unknown values fall back to the one we can draw. */
     val avatar: String = DEFAULT_AVATAR,
-    /** A character Halo plays, for tone only. Empty means its plain voice. */
+    /** A character Halo plays, written by the user. Empty means none of their own. */
     val personality: String = "",
+    /** The chosen character from the shared set, if one is selected. Null means "my own words". */
+    @SerialName("personality_id") val personalityId: String? = null,
+    /**
+     * What Halo actually speaks in, once a selection and the free text have been resolved against
+     * each other. Read-only — the settings page shows it so a built-in is not just a name.
+     */
+    val voice: String = "",
 )
+
+/**
+ * A character the assistant can play.
+ *
+ * [builtin] rows ship with the server and belong to nobody; the rest are the user's own and are
+ * the only ones that can be deleted. Sent by the server rather than derived here, so the app never
+ * has to reason about who owns what.
+ */
+@Serializable
+data class Personality(
+    val id: String,
+    val name: String,
+    val persona: String,
+    val builtin: Boolean = false,
+)
+
+@Serializable
+internal data class PersonalitiesResponse(val personalities: List<Personality> = emptyList())
 
 /**
  * A partial change to the profile.
@@ -348,6 +389,22 @@ data class ProfilePatch(
     val personality: String? = null,
     val lat: Double? = null,
     val lon: Double? = null,
+)
+
+/**
+ * Choosing a character, or choosing none.
+ *
+ * Its own type rather than a field on [ProfilePatch], because the two need opposite things from the
+ * encoder. Every field there is null-by-default and omitted when unset, which is exactly what makes
+ * "leave this alone" work — and exactly what makes "clear it" impossible to express. [EncodeDefault]
+ * forces this one onto the wire even when it is null, so selecting nothing reads as an explicit
+ * null on the server and clears the selection.
+ */
+@Serializable
+data class PersonalityChoice(
+    @EncodeDefault
+    @SerialName("personality_id")
+    val personalityId: String? = null,
 )
 
 /** The face drawn when the user has never chosen one. Matches the server's own default. */

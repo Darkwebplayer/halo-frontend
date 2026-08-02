@@ -27,7 +27,9 @@ import androidx.compose.ui.unit.sp
 import dev.infyplus.halo.ui.HaloButton
 import dev.infyplus.halo.ui.HaloCard
 import dev.infyplus.halo.ui.HaloChip
+import dev.infyplus.halo.ui.HaloIcon
 import dev.infyplus.halo.ui.HaloPalette
+import dev.infyplus.halo.ui.HaloTab
 import dev.infyplus.halo.ui.HaloField
 import dev.infyplus.halo.ui.Mono
 import dev.infyplus.halo.ui.TailVisible
@@ -302,18 +304,65 @@ fun DeviceCard(modifier: Modifier = Modifier) {
     }
 }
 
-/** The Settings section: the credentials, then everything that needs a server to already work. */
+/**
+ * The four kinds of setting, which is also the order you meet them in.
+ *
+ * Server first because nothing else works without it, and it is the only one a fresh install has
+ * to touch. Assistant next because it is the one people actually come back to change.
+ */
+enum class SettingsTab { Server, Assistant, Device, Schedule }
+
+private fun SettingsTab.icon() = when (this) {
+    SettingsTab.Server -> HaloIcon.Server
+    SettingsTab.Assistant -> HaloIcon.Chat
+    SettingsTab.Device -> HaloIcon.Device
+    SettingsTab.Schedule -> HaloIcon.Today
+}
+
+/**
+ * The Settings section, in tabs.
+ *
+ * It used to be one column: credentials, then this device, then everything server-side, growing a
+ * card at a time. Four groups you switch between rather than scroll past, using the same [HaloTab]
+ * the app's own navigation uses — so the label appears only on the one you are on, and the rest
+ * stay glyphs, which is what keeps four of them inside a phone's width.
+ *
+ * Only [SettingsTab.Server] renders unconfigured. Everything on the other three is either loaded
+ * from the backend or meaningless without one, and a tab full of failed requests is a worse answer
+ * than a tab you cannot reach yet.
+ */
 @Composable
 fun SettingsScreen(onSaved: () -> Unit = {}, modifier: Modifier = Modifier) {
+    var tab by remember { mutableStateOf(SettingsTab.Server) }
+    // An unconfigured install has exactly one thing it can usefully do, so it starts there and
+    // cannot be left there by a stale selection either.
+    if (!Config.isConfigured && tab != SettingsTab.Server) tab = SettingsTab.Server
+
     Column(
         modifier.fillMaxWidth().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        CredentialsCard(onSaved)
-        DeviceCard()
-        // Below the credentials, and only once they exist: these settings live on the server, so
-        // there is nothing to load or save until it can be reached.
-        if (Config.isConfigured) ProfileCard()
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SettingsTab.entries.forEach { t ->
+                HaloTab(
+                    label = t.name,
+                    selected = tab == t,
+                    icon = t.icon(),
+                ) {
+                    // Silently ignored rather than disabled: a tab that greys out on a screen the
+                    // user has not filled in yet reads as broken, and the credentials card right
+                    // below is already telling them what to do.
+                    if (Config.isConfigured || t == SettingsTab.Server) tab = t
+                }
+            }
+        }
+
+        when (tab) {
+            SettingsTab.Server -> CredentialsCard(onSaved)
+            SettingsTab.Assistant -> ProfileCard(ProfileSection.Assistant)
+            SettingsTab.Device -> DeviceCard()
+            SettingsTab.Schedule -> ProfileCard(ProfileSection.Schedule)
+        }
     }
 }
 

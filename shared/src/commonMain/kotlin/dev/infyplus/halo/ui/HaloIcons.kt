@@ -25,7 +25,7 @@ import androidx.compose.ui.unit.dp
  * filled Material gear next to the hand-drawn cat reads as two apps. These are six paths in a
  * 24-unit box, stroked at the same relative weight as everything else, and they cost nothing.
  */
-enum class HaloIcon { Today, Focus, Projects, Chat, Bell, Settings }
+enum class HaloIcon { Today, Focus, Projects, Chat, Bell, Settings, Server, Device }
 
 /** Everything is drawn in this box and scaled to whatever the caller asks for. */
 private const val VIEW = 24f
@@ -97,6 +97,24 @@ private val glyphs: Map<HaloIcon, Glyph> = mapOf(
             moveTo(4.5f, 15f); lineTo(19.5f, 15f)
         },
         dots = listOf(Offset(15f, 9f) to 2.4f, Offset(9f, 15f) to 2.4f),
+    ),
+
+    // A stacked box with a status lamp, for the machine at the other end of the address.
+    // Deliberately not a cloud: this is the user's own worker, and a cloud reads as somebody
+    // else's.
+    HaloIcon.Server to Glyph(
+        rounded(4f, 5f, 20f, 11f, 2f).apply {
+            addRoundRect(RoundRect(Rect(4f, 13f, 20f, 19f), CornerRadius(2f, 2f)))
+        },
+        dots = listOf(Offset(7.6f, 8f) to 1.3f, Offset(7.6f, 16f) to 1.3f),
+    ),
+
+    // A phone, for the settings that belong to this installation rather than to the account.
+    HaloIcon.Device to Glyph(
+        rounded(7f, 3.5f, 17f, 20.5f, 2.6f).apply {
+            moveTo(10.6f, 6.4f); lineTo(13.4f, 6.4f)
+        },
+        dots = listOf(Offset(12f, 17.8f) to 1.2f),
     ),
 )
 

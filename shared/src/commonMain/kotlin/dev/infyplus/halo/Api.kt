@@ -5,6 +5,7 @@ import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -158,6 +159,77 @@ class HaloApi(
         }
         if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
         res.body()
+    }
+
+    /**
+     * Rewrite today's summary, because the user did not like the one they got.
+     *
+     * Distinct from [summary], which re-reads a description the server wrote once and cached — so
+     * calling it again could only ever return the same words. This is the one that spends a model
+     * call, which is why it is only offered on a summary that is actually today's.
+     *
+     * Answers 409 when today's occurrence has not come round yet. The card hides the button in
+     * that case; the server refuses regardless, because a stale client should not be able to spend
+     * a model call describing a day that is already over.
+     */
+    suspend fun refreshSummary(kind: SummaryKind): Summary = call {
+        val path = if (kind == SummaryKind.Morning) "morning" else "evening"
+        val res = client.post("$baseUrl/summary/$path/refresh") {
+            header("authorization", "Bearer $authToken")
+        }
+        if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
+        res.body()
+    }
+
+    /** The characters Halo can play: the ones that ship with the server, plus this user's own. */
+    suspend fun personalities(): List<Personality> = call {
+        val res = client.get("$baseUrl/personalities") {
+            header("authorization", "Bearer $authToken")
+        }
+        if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
+        res.body<PersonalitiesResponse>().personalities
+    }
+
+    /** Add one of the user's own. A name they already have answers 409. */
+    suspend fun addPersonality(name: String, persona: String): Personality = call {
+        val res = client.post("$baseUrl/personalities") {
+            contentType(ContentType.Application.Json)
+            header("authorization", "Bearer $authToken")
+            setBody(mapOf("name" to name, "persona" to persona))
+        }
+        if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
+        res.body()
+    }
+
+    /**
+     * Remove one of the user's own. Built-ins answer 404 — they belong to the server.
+     *
+     * The server clears the selection in the same batch when the deleted one was selected, so
+     * there is no second call to make and no window where the profile points at nothing.
+     */
+    suspend fun deletePersonality(id: String) {
+        call {
+            val res = client.delete("$baseUrl/personalities/$id") {
+                header("authorization", "Bearer $authToken")
+            }
+            if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
+        }
+    }
+
+    /**
+     * Choose a character, or pass null to fall back to the user's own written one.
+     *
+     * Separate from [saveProfile] because clearing needs an explicit null on the wire and
+     * [ProfilePatch] omits its nulls by design — see [PersonalityChoice].
+     */
+    suspend fun choosePersonality(id: String?): Profile = call {
+        val res = client.put("$baseUrl/profile") {
+            contentType(ContentType.Application.Json)
+            header("authorization", "Bearer $authToken")
+            setBody(PersonalityChoice(id))
+        }
+        if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
+        res.body<Profile>().also { Config.rememberAvatar(it.avatar) }
     }
 
     /** Every project, archived ones included — items carry only a `project_id`, never a name. */

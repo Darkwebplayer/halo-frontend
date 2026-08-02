@@ -54,6 +54,23 @@ import kotlinx.coroutines.launch
 internal fun summaryLine(kind: SummaryKind, summary: Summary): String =
     summary.description.ifBlank { counts(kind, summary) }
 
+/**
+ * What to call a summary that is not today's, and when the next one lands.
+ *
+ * Both halves matter. "Yesterday's" alone reads like something is broken; the time is what makes it
+ * read as waiting rather than as stale. The time comes from the profile the card already holds, so
+ * someone whose morning summary is at 08:30 is told 08:30 — the whole reason this is not a
+ * hardcoded hour.
+ */
+internal fun staleLabel(kind: SummaryKind, profile: Profile?): String {
+    val name = if (kind == SummaryKind.Morning) "MORNING" else "EVENING"
+    val at = if (kind == SummaryKind.Morning) profile?.morningSummaryTime else profile?.eveningSummaryTime
+    return buildString {
+        append("YESTERDAY'S $name SUMMARY")
+        if (!at.isNullOrBlank()) append(" · TODAY'S ARRIVES AT $at")
+    }
+}
+
 /** The plain fallback when no description could be written. Counts are better than an empty card. */
 private fun counts(kind: SummaryKind, s: Summary): String =
     if (kind == SummaryKind.Morning) {
@@ -94,6 +111,8 @@ fun SummaryCard(
     var error by remember { mutableStateOf<String?>(null) }
     var expanded by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    var rewriting by remember { mutableStateOf(false) }
 
     suspend fun load() {
         loading = true
@@ -153,6 +172,17 @@ fun SummaryCard(
                 // the growth is continuous and can be reversed halfway.
                 val lines = (3 + reveal * 17).toInt()
 
+                // Whose day this is. Only said when it is not today's — a label on the current
+                // summary would be noise, and the absence of one is what makes this readable as
+                // "something is different about this one".
+                if (!s.summaryFresh && s.description.isNotBlank()) {
+                    Mono(
+                        staleLabel(kind, profile),
+                        Modifier.padding(bottom = 6.dp),
+                        color = HaloPalette.navy.copy(alpha = 0.6f),
+                    )
+                }
+
                 Text(
                     text,
                     fontSize = 14.sp,
@@ -175,7 +205,27 @@ fun SummaryCard(
                         ) { expanded = !expanded }
                     }
                     HaloButton(label = "Chat", filled = false) { onChat(kind, s) }
-                    HaloButton(label = "Refresh", filled = false) { scope.launch { load() } }
+                    // Only on a summary that is actually today's. Re-reading an older one could
+                    // not change it — the server serves the same saved column — and rewriting one
+                    // is refused outright, so a button here would have been a button that lied.
+                    //
+                    // It is also no longer a re-fetch. "Refresh" always meant "write me a
+                    // different one", and now that is what it does.
+                    if (s.summaryFresh) {
+                        HaloButton(
+                            label = if (rewriting) "Rewriting…" else "Rewrite",
+                            filled = false,
+                            enabled = !rewriting,
+                        ) {
+                            scope.launch {
+                                rewriting = true
+                                apiCatching { api.refreshSummary(kind) }
+                                    .onSuccess { summary = it }
+                                    .onFailure { error = it.message ?: "Could not rewrite it" }
+                                rewriting = false
+                            }
+                        }
+                    }
                 }
             }
         }

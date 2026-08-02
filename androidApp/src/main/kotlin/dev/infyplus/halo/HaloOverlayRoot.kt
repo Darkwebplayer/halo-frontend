@@ -10,6 +10,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -139,6 +145,16 @@ fun HaloOverlayRoot(
     // which is on the phone's face at that moment.
     var menu by remember { mutableStateOf(false) }
 
+    /**
+     * Where the orb was standing when the hold began.
+     *
+     * Captured rather than read at draw time, and that is not a refinement — expanding the window
+     * moves it to the top-left corner and zeroes the very coordinates the menu needs, so reading
+     * [windowX] from inside the menu answers 0,0 every time and the bubble appears in the corner
+     * of the screen instead of beside the orb.
+     */
+    var anchor by remember { mutableStateOf(0 to 0) }
+
     // Whatever closes the panel closes this too. It lives in the same expanded window, so a menu
     // left standing would come back the next time the panel opened, over the panel.
     LaunchedEffect(expanded) { if (!expanded) menu = false }
@@ -146,6 +162,8 @@ fun HaloOverlayRoot(
     if (expanded && menu) {
         BackHandler { onExpanded(false) }
         OrbMenu(
+            anchorX = anchor.first,
+            anchorY = anchor.second,
             onHide = {
                 // Collapse first, so the panel is not left up over a window that is about to go.
                 onExpanded(false)
@@ -160,10 +178,23 @@ fun HaloOverlayRoot(
         // Back closes the panel rather than being swallowed by a focusable overlay.
         BackHandler { onExpanded(false) }
 
+        // How much of the screen the keyboard is covering, right now.
+        //
+        // The window is already ADJUST_RESIZE and deliberately not FLAG_LAYOUT_NO_LIMITS — which
+        // is what makes insets reach it at all — but nothing was consuming them, so the panel went
+        // on being measured against the whole screen and the composer ended up behind the keyboard.
+        val imeDp = with(LocalDensity.current) { WindowInsets.ime.getBottom(this).toDp() }
+
         // A ceiling, not a target: the panel wraps its content, and this is where it stops. It has
         // to exist — the thread and the alert list are lazy lists, and a lazy list measured with
         // an unbounded height throws rather than growing.
-        val maxPanel = (LocalConfiguration.current.screenHeightDp * 0.7f).dp
+        //
+        // Measured against what is actually left rather than against the screen. With the keyboard
+        // up, 70% of the display is more room than there is, and the difference is exactly the part
+        // that used to overflow. The floor keeps it usable on a small screen with a tall keyboard,
+        // where the honest answer would be almost nothing.
+        val screenDp = LocalConfiguration.current.screenHeightDp.dp
+        val maxPanel = maxOf(220.dp, (screenDp - imeDp) * 0.86f)
 
         Box(
             Modifier
@@ -187,6 +218,10 @@ fun HaloOverlayRoot(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
+                    // Sits on top of the keyboard rather than under it. Order matters: the padding
+                    // has to be applied before the height constraint, or the panel is sized for a
+                    // screen it is then pushed off the bottom of.
+                    .imePadding()
                     .heightIn(min = 280.dp, max = maxPanel)
                     .padding(start = 10.dp, end = 10.dp, top = 72.dp, bottom = 14.dp),
                 onClose = { onExpanded(false) },
@@ -279,7 +314,10 @@ fun HaloOverlayRoot(
                         // comment above is about.
                         if (drag.wasTap(slop)) {
                             // A hold offers the menu; a tap opens the panel. Both need the
-                            // full-screen window, so both go through onExpanded.
+                            // full-screen window, so both go through onExpanded — and the orb's
+                            // position is read *before* that call, which is the moment it is
+                            // still the collapsed window's own.
+                            anchor = windowX() to windowY()
                             menu = drag.wasLongPress(longPress)
                             onExpanded(true)
                         }
@@ -315,46 +353,71 @@ fun HaloOverlayRoot(
     }
 }
 
+/** How wide the menu bubble is, and how much room the orb takes up beside it. */
+private val MENU_WIDTH = 208.dp
+private val ORB_FOOTPRINT = 114.dp
+
 /**
- * What a hold on the orb offers.
+ * What a hold on the orb offers: a small bubble beside it, not a sheet over everything.
  *
- * Deliberately one action and a way out. This is not a settings screen — it is the answer to "get
- * out of my way", reachable from the thing that is in the way — and every row added to it is
- * another thing to read while whatever you were actually doing waits underneath.
+ * Deliberately one action and a way out. This is the answer to "get out of my way", reached from
+ * the thing that is in the way — so it appears *at* that thing, and every row added to it is
+ * another thing to read while whatever you were doing waits underneath.
  *
- * Says where the button goes and how to get it back, because the gesture that opens this is the
- * same gesture that used to hide the orb outright, and nothing on screen at that point explains
- * that a Quick Settings tile exists.
+ * Placed against the orb's own window coordinates, which is why they are passed in: while this is
+ * up, the window is full-screen, so nothing about the layout knows where the bubble was parked. It
+ * flips to whichever side has room, and the scrim is fully transparent — the point is to keep the
+ * screen behind it readable, unlike the panel, which is a thing you are meant to be looking at.
+ *
+ * Says how to get the button back, because the gesture that opens this is the one that used to
+ * hide the orb outright, and nothing on screen at that moment explains that a tile exists.
  */
 @Composable
-private fun OrbMenu(onHide: () -> Unit, onDismiss: () -> Unit) {
+private fun OrbMenu(anchorX: Int, anchorY: Int, onHide: () -> Unit, onDismiss: () -> Unit) {
+    val density = LocalDensity.current
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+
+    val orbX = with(density) { anchorX.toDp() }
+    val orbY = with(density) { anchorY.toDp() }
+
+    // Beside the orb, on whichever side it fits. Parked against the right edge — which is where a
+    // right-handed person leaves it — there is no room to the right, so it goes left instead of
+    // off-screen.
+    val toTheRight = orbX + ORB_FOOTPRINT + MENU_WIDTH <= screenWidth
+    val x = if (toTheRight) orbX + ORB_FOOTPRINT - 12.dp else orbX - MENU_WIDTH + 12.dp
+    // Roughly level with the orb, pulled back inside the screen at both ends — the orb can sit at
+    // the very top or the very bottom, and the bubble is taller than it is.
+    val y = orbY - 8.dp
+
     Box(
         Modifier
             .fillMaxSize()
-            .pointerInput(Unit) { detectTapGestures { onDismiss() } }
-            .background(Color.Black.copy(alpha = 0.28f)),
-        contentAlignment = Alignment.Center,
+            .pointerInput(Unit) { detectTapGestures { onDismiss() } },
     ) {
         HaloCard(
-            // Its own tap handler, consuming: without one, a tap on the card falls through to the
-            // scrim above and closes the menu you were reaching into.
             Modifier
-                .padding(28.dp)
+                .offset(
+                    x = x.coerceIn(8.dp, (screenWidth - MENU_WIDTH - 8.dp).coerceAtLeast(8.dp)),
+                    y = y.coerceIn(8.dp, (screenHeight - 168.dp).coerceAtLeast(8.dp)),
+                )
+                .width(MENU_WIDTH)
+                // Its own tap handler, consuming: without one, a tap on the card falls through to
+                // the scrim behind and closes the menu you were reaching into.
                 .pointerInput(Unit) { detectTapGestures { } },
         ) {
             Mono("FLOATING BUTTON")
             Text(
                 "Hide it until you ask for it back.",
-                Modifier.padding(top = 6.dp, bottom = 12.dp),
-                fontSize = 13.sp,
+                Modifier.padding(top = 6.dp, bottom = 10.dp),
+                fontSize = 12.sp,
                 color = HaloPalette.navy.copy(alpha = 0.75f),
             )
             HaloButton(label = "Hide it", modifier = Modifier.fillMaxWidth(), onClick = onHide)
             Text(
-                "Bring it back from the Halo tile in Quick Settings, the notification, " +
-                    "or Settings in the app.",
-                Modifier.padding(top = 10.dp),
-                fontSize = 11.sp,
+                "Bring it back from the Halo tile in Quick Settings, the notification, or Settings.",
+                Modifier.padding(top = 8.dp),
+                fontSize = 10.sp,
                 color = HaloPalette.navy.copy(alpha = 0.6f),
             )
         }
