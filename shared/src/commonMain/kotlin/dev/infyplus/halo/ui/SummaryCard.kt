@@ -172,10 +172,10 @@ fun SummaryCard(
                 // the growth is continuous and can be reversed halfway.
                 val lines = (3 + reveal * 17).toInt()
 
-                // Whose day this is. Only said when it is not today's — a label on the current
-                // summary would be noise, and the absence of one is what makes this readable as
-                // "something is different about this one".
-                if (!s.summaryFresh && s.description.isNotBlank()) {
+                // Whose day this is. Said only when the text actually came out of storage — a
+                // label on the current summary would be noise, and one on a description written a
+                // moment ago from today's own list would be wrong.
+                if (s.summarySaved && s.description.isNotBlank()) {
                     Mono(
                         staleLabel(kind, profile),
                         Modifier.padding(bottom = 6.dp),

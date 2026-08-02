@@ -141,6 +141,15 @@ data class Summary(
      * than offering one that would 409.
      */
     @SerialName("summary_fresh") val summaryFresh: Boolean = false,
+    /**
+     * Whether [description] came out of storage rather than being written for this request.
+     *
+     * What the "yesterday's summary" line keys off — and not the same question as [summaryFresh].
+     * A first-ever summary, written before today's own time has come round, is stamped with an
+     * occurrence that is already behind us and so is *not* fresh; but it describes the list as it
+     * stands right now, and calling that yesterday's would be a plain lie.
+     */
+    @SerialName("summary_saved") val summarySaved: Boolean = false,
     val date: String = "",
     @SerialName("as_of") val asOf: String = "",
     val today: List<Item> = emptyList(),

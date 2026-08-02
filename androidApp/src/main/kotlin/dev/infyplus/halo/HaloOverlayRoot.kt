@@ -30,6 +30,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
+import dev.infyplus.halo.ui.CatGeometry
 import androidx.compose.ui.unit.sp
 import dev.infyplus.halo.ui.HaloButton
 import dev.infyplus.halo.ui.HaloCard
@@ -271,9 +274,30 @@ fun HaloOverlayRoot(
     // sixty times a second for values nothing draws.
     val drag = remember { DragTracker() }
 
+    // The touchable area, which used to be the whole window.
+    //
+    // The window has to be bigger than the orb — the hop, the ground shadow, the speech cloud and
+    // the badge all live outside it, and the window clips where the composable does not — but that
+    // is a reason for the *window* to be 114×120, not for a 69dp cat to swallow taps 20dp clear of
+    // itself. Everything in that margin is transparent, so a touch there was landing on nothing and
+    // being eaten anyway.
+    //
+    // A circle rather than a box, because the thing being aimed at is a circle. Radius is the orb's
+    // own, so this tracks [ORB_SCALE] instead of being a number that has to be remembered.
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
+    val orbRadiusPx = with(LocalDensity.current) { (CatGeometry.ORB_DP * ORB_SCALE / 2f).toPx() }
+
+    fun onOrb(x: Float, y: Float): Boolean {
+        if (boxSize.width == 0) return true // not measured yet; never refuse the first touch
+        val dx = x - boxSize.width / 2f
+        val dy = y - boxSize.height / 2f
+        return dx * dx + dy * dy <= orbRadiusPx * orbRadiusPx
+    }
+
     Box(
         Modifier
             .fillMaxSize()
+            .onSizeChanged { boxSize = it }
             /*
              * Dragging is computed from RAW (screen) coordinates, not from pointer deltas.
              *
@@ -290,9 +314,17 @@ fun HaloOverlayRoot(
             .pointerInteropFilter { event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
-                        drag.start(event.rawX, event.rawY, windowX(), windowY())
-                        state.wake()
-                        true
+                        // Refusing the down is the whole mechanism: Android sends the rest of a
+                        // gesture only to whoever accepted its first event, so nothing below needs
+                        // a second guard — and the touch goes to whatever is behind the window
+                        // instead of being swallowed by transparent margin.
+                        if (!onOrb(event.x, event.y)) {
+                            false
+                        } else {
+                            drag.start(event.rawX, event.rawY, windowX(), windowY())
+                            state.wake()
+                            true
+                        }
                     }
 
                     MotionEvent.ACTION_MOVE -> {
