@@ -180,8 +180,21 @@ data class CheckIn(
     @SerialName("answered_at") val answeredAt: String? = null,
     val item: Item? = null,
 ) {
-    /** Whether this still wants a decision — the same rule the orb badge counts. */
+    /** Whether this row itself was ever answered. Says nothing about the item behind it. */
     val open: Boolean get() = outcome == null
+
+    /**
+     * Whether there is still anything to *do* about this.
+     *
+     * Three ways to have nothing left: it was answered here, the item was finished somewhere else —
+     * another device, the notification's own buttons, the plan screen — or it never had an item at
+     * all, which is what a summary or a general nudge is.
+     *
+     * [open] alone is not that test, and using it as one is how the alerts list came to offer
+     * Snooze on a task that was already done. Everything else in the app already agreed on this
+     * rule; it just lived inside [attentionCount] where only the badge could reach it.
+     */
+    val actionable: Boolean get() = open && item != null && item.doneAt == null
 }
 
 @Serializable
@@ -199,7 +212,7 @@ data class CheckInsResponse(val checkins: List<CheckIn> = emptyList())
  * item, which have no action attached.
  */
 fun List<CheckIn>.attentionCount(): Int =
-    filter { it.open && it.item != null && it.item.doneAt == null }
+    filter { it.actionable }
         .mapNotNull { it.item?.id }
         .distinct()
         .size

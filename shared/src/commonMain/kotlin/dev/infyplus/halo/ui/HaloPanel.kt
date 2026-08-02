@@ -576,8 +576,26 @@ private fun TypingDots() {
  * `seen` is a server-internal outcome meaning "nothing was asked of you", so showing it verbatim
  * described a state the user never chose.
  */
-private fun outcomeLabel(outcome: String?) = when (outcome) {
-    null -> "NEEDS A DECISION"
+/**
+ * What this row's status line says.
+ *
+ * Takes the whole check-in rather than its `outcome`, because the outcome alone cannot tell the
+ * difference between "nobody has answered this" and "there is nothing to answer". A row is only
+ * ever unanswered *and* still open — which is what "needs a decision" claims — when its item is
+ * still outstanding; finished elsewhere, or never carrying an item at all, it is history.
+ */
+private fun outcomeLabel(checkin: CheckIn) = when {
+    checkin.actionable -> "NEEDS A DECISION"
+    // Completed on another device, from the notification's own buttons, or on the plan screen.
+    // The row was never answered, but the thing it was about is over.
+    checkin.item?.doneAt != null -> "DONE"
+    // A summary or a general nudge: it fired, it was read, there was never anything to decide.
+    checkin.outcome == null -> "READ"
+    else -> settledLabel(checkin.outcome)
+}
+
+private fun settledLabel(outcome: String?) = when (outcome) {
+    null -> "READ"
     "seen" -> "READ"
     "done" -> "DONE"
     "snoozed" -> "SNOOZED"
@@ -632,12 +650,19 @@ private fun NotificationList(
                 Modifier
                     .fillMaxWidth()
                     .clip(CardShape)
+                    // Lit only while there is something to do about it. A row for a task that has
+                    // since been finished is history, and history that glows like an open alert is
+                    // what makes a list of them impossible to read.
                     .background(
-                        if (checkin.open) HaloPalette.sun.copy(alpha = 0.22f)
+                        if (checkin.actionable) HaloPalette.sun.copy(alpha = 0.22f)
                         else HaloPalette.body.copy(alpha = 0.14f),
                     )
                     .border(2.dp, HaloPalette.navy.copy(alpha = 0.22f), CardShape)
-                    .clickable(enabled = item != null) { onOpen(checkin) }
+                    // Tapping is what leads to Snooze, Done and a scoped chat, so it is offered
+                    // only where those mean anything. It used to open on any row carrying an item,
+                    // which put a Snooze button on things that were already done — an action the
+                    // server would take and that would achieve nothing.
+                    .clickable(enabled = checkin.actionable) { onOpen(checkin) }
                     .padding(horizontal = 13.dp, vertical = 10.dp),
             ) {
                 Row(
@@ -652,9 +677,10 @@ private fun NotificationList(
                             .joinToString(" · "),
                     )
                     Mono(
-                        text = outcomeLabel(checkin.outcome),
-                        color = if (checkin.open) HaloPalette.warm else HaloPalette.navy.copy(alpha = 0.6f),
-                        weight = if (checkin.open) FontWeight.Bold else FontWeight.Normal,
+                        text = outcomeLabel(checkin),
+                        color = if (checkin.actionable) HaloPalette.warm
+                        else HaloPalette.navy.copy(alpha = 0.6f),
+                        weight = if (checkin.actionable) FontWeight.Bold else FontWeight.Normal,
                     )
                 }
                 Text(
