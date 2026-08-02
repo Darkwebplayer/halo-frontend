@@ -205,6 +205,7 @@ private fun ApplicationScope.Halo() {
         unread = unread,
         headsUp = halo.headsUp != null,
         timerRunning = timer.isRunning,
+        open = expanded,
     )
 
     DisposableEffect(Unit) {

@@ -43,4 +43,26 @@ class OrbVisibilityTest {
     fun dismissalBeatsEverything() {
         assertFalse(orbVisible(always = true, hidden = true, unread = 3, headsUp = true, timerRunning = true))
     }
+
+    /**
+     * ...except an open panel, which is not a fact about what is waiting but about what is already
+     * on screen. The shade notification opens the panel without undoing a dismissal, and this is
+     * what stops that from asking for a panel in a window that is not there.
+     */
+    @Test
+    fun anOpenPanelKeepsItsWindow() {
+        assertTrue(
+            orbVisible(
+                always = false, hidden = true, unread = 0, headsUp = false, timerRunning = false,
+                open = true,
+            ),
+        )
+        // And closing it drops straight back to hidden, rather than leaving the bubble behind.
+        assertFalse(
+            orbVisible(
+                always = false, hidden = true, unread = 0, headsUp = false, timerRunning = false,
+                open = false,
+            ),
+        )
+    }
 }

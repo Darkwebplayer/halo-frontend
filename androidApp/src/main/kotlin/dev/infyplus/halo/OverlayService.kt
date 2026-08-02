@@ -19,6 +19,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.platform.ComposeView
 import dev.infyplus.halo.ui.HaloState
 import kotlinx.coroutines.CoroutineScope
@@ -29,6 +30,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 
 /**
  * Hosts the always-available floating assistant.
@@ -54,11 +56,18 @@ class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
     private var view: ComposeView? = null
-    private val host = OverlayHost()
-    private var bannerView: ComposeView? = null
-    // Its own host: a second window means a second view tree, and each needs its own lifecycle,
-    // ViewModelStore and SavedStateRegistry or Compose crashes on first composition.
-    private val bannerHost = OverlayHost()
+
+    /**
+     * One host per window, created with the window and thrown away with it.
+     *
+     * It used to be a single instance reused for the life of the service, which was fine while the
+     * window was created once and never removed. It is not fine now that the orb comes and goes:
+     * [OverlayHost.detach] drives its `LifecycleRegistry` to DESTROYED, and a `LifecycleRegistry`
+     * has no way back up from there — the next `attach` threw out of `performRestore`, which is a
+     * crash in a foreground service, which is the whole app. A lifecycle is not reusable, so this
+     * does not try to reuse one.
+     */
+    private var host: OverlayHost? = null
     private lateinit var params: WindowManager.LayoutParams
     private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -69,6 +78,11 @@ class OverlayService : Service() {
 
     /** Compose reads this; the window layout follows it. */
     private var expanded by mutableStateOf(false)
+
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** Undone in [onDestroy]; a leaked observer outlives the service and keeps the process busy. */
+    private var snapshotPump: androidx.compose.runtime.snapshots.ObserverHandle? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -99,8 +113,9 @@ class OverlayService : Service() {
         attachSettings(this)
         Config.load()
 
-        showBanner()
+        pumpSnapshots()
         watchVisibility()
+        watchOpenRequests()
         watchNotification()
         // After attachSettings, which is what supplies the context this needs.
         startNetworkWatch()
@@ -109,7 +124,12 @@ class OverlayService : Service() {
         // alarm. Alarms report from AlarmReceiver instead, where goAsync can hold the process
         // open for the call. Reads the credentials at firing time, so changing servers needs no
         // restart of this service.
-        reportFiredTo(syncScope)
+        //
+        // `banner = false`: Android's own heads-up notification already shows the title, the body
+        // and the action buttons, and is dismissed by the swipe everyone knows. Halo used to draw a
+        // second copy of that in an overlay window of its own, which was harder to get rid of than
+        // the real one. Desktop still passes true — a tray notification cannot carry a button.
+        reportFiredTo(syncScope, banner = false)
 
         // A plain in-process coroutine loop, deliberately — NOT WorkManager or JobScheduler.
         //
@@ -177,7 +197,8 @@ class OverlayService : Service() {
                 )
             }
         }
-        host.attach(composeView)
+        val fresh = OverlayHost()
+        fresh.attach(composeView)
         // The permission was checked above, but `canDrawOverlays` and `addView` are not one atomic
         // step — revoking it in between throws BadTokenException, and an unguarded throw in
         // onCreate takes the process down rather than the window. There is nothing to run without
@@ -185,11 +206,12 @@ class OverlayService : Service() {
         val added = runCatching { windowManager.addView(composeView, params) }
         if (added.isFailure) {
             Sync.log("overlay window refused: ${added.exceptionOrNull()?.message}")
-            host.detach()
+            fresh.detach()
             stopSelf()
             return
         }
         view = composeView
+        host = fresh
     }
 
     /**
@@ -200,21 +222,27 @@ class OverlayService : Service() {
      * foreground service from the background requires an overlay window that is *already visible* —
      * so a service that stopped itself when the bubble was hidden might not be able to start again
      * to bring it back.
-     *
-     * The banner window stays too: it is a six-second card announcing something that just fired,
-     * and in "only when needed" mode it is the thing that brings the orb back.
      */
     private fun hideOverlay() {
         val v = view ?: return
+        // Cleared before anything can throw. A half-removed window that this service still believes
+        // in is worse than no window: `showOverlay` would return early on it forever, and the orb
+        // could never come back without a restart.
+        view = null
+        val owner = host
+        host = null
+
         // Collapse first. Removing a full-screen focusable window mid-panel leaves the IME up and
         // the next `showOverlay` would rebuild it at the expanded size.
         if (expanded) {
             expanded = false
-            applyMode(false)
+            runCatching { applyMode(false) }
         }
         runCatching { windowManager.removeView(v) }
-        host.detach()
-        view = null
+            .onFailure { Sync.log("overlay window would not come down: ${it.message}") }
+        // After the view is out of the tree, never before: this disposes the composition, and
+        // disposing one that is still attached and dispatching is its own crash.
+        runCatching { owner?.detach() }
     }
 
     /**
@@ -229,11 +257,14 @@ class OverlayService : Service() {
      * On Main, because `addView`/`removeView` are main-thread calls and because this has to reach
      * the *same* thread the composition writes those singletons from.
      *
-     * One dependency worth naming: Compose only hands a snapshot change to `snapshotFlow` once
-     * something calls `Snapshot.sendApplyNotifications()`, and what does that on Android is
-     * `GlobalSnapshotManager`, started by the first `ComposeView` in the process. [showBanner] below
-     * always makes one, and it is never taken down — which is the other reason the banner window
-     * stays up while the orb is hidden.
+     * `yield()` before acting, and it is load-bearing. Every one of these decisions is provoked by
+     * something the user just touched — a long-press inside the orb's own `MotionEvent` dispatch, a
+     * tap on a menu row, a switch in Settings — and tearing the window down from inside that
+     * gesture disposes a composition that is still running, from within itself. Yielding puts the
+     * work on the next main-loop message instead, by which time the gesture has finished.
+     *
+     * Wrapped, because a window operation that fails must not take a foreground service with it.
+     * The orb not appearing is a bug; the assistant dying is the app.
      */
     private fun watchVisibility() {
         syncScope.launch(Dispatchers.Main) {
@@ -244,10 +275,69 @@ class OverlayService : Service() {
                     unread = state.unread,
                     headsUp = state.headsUp != null,
                     timerRunning = timer.isRunning,
+                    open = expanded,
                 )
             }
                 .distinctUntilChanged()
-                .collect { visible -> if (visible) showOverlay() else hideOverlay() }
+                .collect { visible ->
+                    yield()
+                    runCatching { if (visible) showOverlay() else hideOverlay() }
+                        .onFailure { Sync.log("overlay could not be made ${if (visible) "visible" else "hidden"}: $it") }
+                }
+        }
+    }
+
+    /**
+     * Honour a request for the panel from outside the overlay — the shade notification's tap.
+     *
+     * Puts the window back first if the bubble was dismissed, without clearing the dismissal: while
+     * the panel is open [orbVisible] keeps the window on `open` alone, and closing it drops the orb
+     * straight back out of sight. Asking for the panel is not the same as asking for the bubble
+     * back, and answering the second question when the first was asked is how a dismissal quietly
+     * stops meaning anything.
+     */
+    private fun watchOpenRequests() {
+        syncScope.launch(Dispatchers.Main) {
+            snapshotFlow { state.pendingOpen }
+                .distinctUntilChanged()
+                .collect { wanted ->
+                    if (!wanted) return@collect
+                    yield()
+                    runCatching {
+                        showOverlay()
+                        if (view != null && !expanded) {
+                            expanded = true
+                            applyMode(true)
+                        }
+                    }.onFailure { Sync.log("could not open the panel: $it") }
+                    state.clearPendingOpen()
+                }
+        }
+    }
+
+    /**
+     * Deliver Compose state changes to the collectors above when no Compose UI is running.
+     *
+     * `snapshotFlow` only re-reads once something calls `Snapshot.sendApplyNotifications()`. On
+     * Android that is normally `GlobalSnapshotManager`, started by the first `ComposeView` in the
+     * process — but the entire point here is to react *while there is no window*, and now that the
+     * banner window is gone there may be no `ComposeView` in this process at all. Leaning on
+     * somebody else's recomposer to notice that the orb should come back is how it silently never
+     * does.
+     *
+     * Posted rather than sent inline: a write observer runs inside the write, and sending apply
+     * notifications from there re-enters the snapshot machinery. The flag collapses a burst of
+     * writes into one delivery.
+     */
+    private fun pumpSnapshots() {
+        val queued = java.util.concurrent.atomic.AtomicBoolean(false)
+        snapshotPump = Snapshot.registerGlobalWriteObserver {
+            if (queued.compareAndSet(false, true)) {
+                mainHandler.post {
+                    queued.set(false)
+                    runCatching { Snapshot.sendApplyNotifications() }
+                }
+            }
         }
     }
 
@@ -290,53 +380,6 @@ class OverlayService : Service() {
                     }
                 }
         }
-    }
-
-    /**
-     * The heads-up banner, in a window of its own.
-     *
-     * Not part of the main overlay because the two need opposite shapes. The banner spans the
-     * screen's width, and the collapsed orb is 150dp wide — sharing a window would mean keeping
-     * the orb's window screen-wide all the time, which would swallow every touch behind it for
-     * the sake of a card that shows for six seconds.
-     *
-     * `WRAP_CONTENT` height means only the strip itself is touchable and everything below passes
-     * through. Added after the orb, so it stacks above it.
-     */
-    private fun showBanner() {
-        if (bannerView != null) return
-        // Its own check now that it no longer hangs off showOverlay, which used to make it for both.
-        if (!Settings.canDrawOverlays(this)) return
-
-        val bannerParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            overlayType(),
-            COLLAPSED_FLAGS,
-            PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = Gravity.TOP
-            y = dp(8)
-        }
-
-        val v = ComposeView(this).apply {
-            setContent {
-                HaloBannerHost(
-                    api = remember(Config.baseUrl, Config.authToken) {
-                        HaloApi(Config.baseUrl, Config.authToken)
-                    },
-                    onOpenPanel = {
-                        if (!expanded) {
-                            expanded = true
-                            applyMode(true)
-                        }
-                    },
-                )
-            }
-        }
-        bannerHost.attach(v)
-        runCatching { windowManager.addView(v, bannerParams) }
-        bannerView = v
     }
 
     private fun overlayType() =
@@ -401,12 +444,9 @@ class OverlayService : Service() {
     override fun onDestroy() {
         Notifications.onFired = null
         syncScope.cancel()
-        view?.let { runCatching { windowManager.removeView(it) } }
-        bannerView?.let { runCatching { windowManager.removeView(it) } }
-        host.detach()
-        bannerHost.detach()
-        view = null
-        bannerView = null
+        snapshotPump?.dispose()
+        snapshotPump = null
+        hideOverlay()
         super.onDestroy()
     }
 
@@ -463,28 +503,56 @@ class OverlayService : Service() {
             // The timestamp is meaningless on something that has been there since boot, and it
             // costs the width the status line wants.
             .setShowWhen(false)
+            // Tapping opens the floating panel, not the app. The panel is the surface the whole
+            // assistant is built around — the thing the bubble exists to reach — and it opens over
+            // whatever the user is already doing rather than replacing it. It works even when the
+            // bubble has been dismissed, and closing it leaves the bubble dismissed.
             .setContentIntent(
                 PendingIntent.getActivity(
                     this,
-                    0,
-                    Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    CONTROL_OPEN.hashCode(),
+                    Intent(this, OpenPanelActivity::class.java)
+                        .setAction(CONTROL_OPEN)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
                 ),
             )
+            // Whether the timer control comes first is not cosmetic: Android gives an ongoing
+            // notification room for three actions and shows them in order, and on a narrow phone
+            // the third is the one that gets clipped.
             .addAction(
-                Notification.Action.Builder(
-                    null as Icon?,
-                    if (Config.orbHidden) "Show button" else "Hide button",
-                    PendingIntent.getBroadcast(
-                        this,
-                        0,
-                        Intent(this, OrbToggleReceiver::class.java),
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                    ),
-                ).build(),
+                action(
+                    when {
+                        timer.isRunning -> "Pause"
+                        timer.state is TimerState.Paused -> "Resume"
+                        else -> "Start focus"
+                    },
+                    CONTROL_TIMER,
+                ),
             )
+            .addAction(action(if (Config.orbHidden) "Show button" else "Hide button", CONTROL_ORB))
             .build()
     }
+
+    /**
+     * One notification action, carrying which control it is.
+     *
+     * The request code is derived from the control's name so each keeps its own PendingIntent slot.
+     * Sharing one would make every `FLAG_UPDATE_CURRENT` rewrite the others, and both buttons would
+     * end up doing whichever was built last.
+     */
+    private fun action(label: String, control: String) = Notification.Action.Builder(
+        // A real icon rather than null: phones render actions as text, but watches, cars and a
+        // couple of OEM shades draw the icon instead and show nothing at all without one.
+        Icon.createWithResource(this, R.drawable.ic_stat_halo),
+        label,
+        PendingIntent.getBroadcast(
+            this,
+            control.hashCode(),
+            Intent(this, OverlayControlReceiver::class.java).setAction(control),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        ),
+    ).build()
 
     /**
      * One line saying what the orb would be saying, in the same order of precedence it uses.
@@ -506,6 +574,11 @@ class OverlayService : Service() {
         /** The useful line's channel. Separate because a channel's importance is fixed once made. */
         private const val STATUS_CHANNEL_ID = "halo_status"
         private const val NOTIFICATION_ID = 1
+
+        /** Which control a notification tap was. Read back by [OverlayControlReceiver]. */
+        const val CONTROL_OPEN = "dev.infyplus.halo.OPEN_PANEL"
+        const val CONTROL_ORB = "dev.infyplus.halo.TOGGLE_ORB"
+        const val CONTROL_TIMER = "dev.infyplus.halo.TOGGLE_TIMER"
 
         /**
          * Big enough for the orb *and* what hangs outside it — the drawing bleeds past the orb so

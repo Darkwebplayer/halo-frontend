@@ -101,14 +101,27 @@ fun notifyLocally(item: Scheduled) {
 fun reportFiredTo(
     scope: CoroutineScope,
     state: dev.infyplus.halo.ui.HaloState = dev.infyplus.halo.ui.HaloState.shared,
+    /**
+     * Whether this host draws the in-app heads-up card.
+     *
+     * False on Android, where it would be a second copy of something the platform already does
+     * better: a native heads-up notification carries the same title, body and action buttons, is
+     * dismissed by the swipe everyone already knows, and does not need an overlay window of its
+     * own. Desktop has no such thing — a tray notification cannot carry a button — so it keeps the
+     * card, and this is the flag that lets one shared wiring serve both.
+     *
+     * Not merely unread: leaving it set on a host with nothing to render it would strand a
+     * notification in [state] that nothing could ever dismiss, which the orb's own visibility
+     * reads as "something is still waiting".
+     */
+    banner: Boolean = true,
 ) {
     Notifications.onFired = { item ->
         // Reflect it locally first. The badge is derived from the server's count, which does not
         // know this fired until the report lands and is only re-read once a minute — so without
         // this the orb sits behind the notification the user is already looking at.
         state.noteFired(hasItem = item.itemId != null)
-        // The in-overlay card, alongside the system notification rather than instead of it.
-        state.showHeadsUp(item)
+        if (banner) state.showHeadsUp(item)
 
         scope.launch {
             if (!Config.isConfigured) return@launch

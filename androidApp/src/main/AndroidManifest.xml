@@ -41,10 +41,22 @@
             </intent-filter>
         </activity>
 
+        <!-- Opens the floating panel from the status notification and gets out of the way. An
+             activity rather than a broadcast because only launching one collapses the shade, and
+             because starting the overlay service from the foreground is allowed where starting it
+             from the background is not. -->
+        <activity
+            android:name=".OpenPanelActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <receiver android:name=".AlarmReceiver" android:exported="false" />
         <receiver android:name=".ActionReceiver" android:exported="false" />
-        <!-- The status notification's Show/Hide action. -->
-        <receiver android:name=".OrbToggleReceiver" android:exported="false" />
+        <!-- The status notification's buttons. -->
+        <receiver android:name=".OverlayControlReceiver" android:exported="false" />
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

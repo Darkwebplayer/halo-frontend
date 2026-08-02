@@ -19,8 +19,14 @@ private const val SHADE_STATUS_KEY = "shade_status"
  * reports it back as an on/off state. Two of those are untestable platform code, which is the
  * reason this is a plain function taking plain values rather than reading [Config] itself.
  *
- * [hidden] outranks everything: dismissing the bubble means dismissed, even with something waiting.
- * The only ways back are the settings toggle, the tile, and the shade notification's action.
+ * [hidden] outranks everything else: dismissing the bubble means dismissed, even with something
+ * waiting. The ways back are the settings toggle, the tile, and the shade notification.
+ *
+ * [open] outranks even that, and is not a way back — it is the panel already being on screen. The
+ * shade notification opens the panel directly, because that is where things actually get done, and
+ * it has to be able to do so *without* quietly undoing a dismissal: closing the panel drops
+ * straight back to hidden. A window cannot host a panel it does not have, so this is also simply
+ * what stops the two from contradicting each other.
  */
 fun orbVisible(
     always: Boolean,
@@ -28,7 +34,8 @@ fun orbVisible(
     unread: Int,
     headsUp: Boolean,
     timerRunning: Boolean,
-): Boolean = !hidden && (always || unread > 0 || headsUp || timerRunning)
+    open: Boolean = false,
+): Boolean = open || (!hidden && (always || unread > 0 || headsUp || timerRunning))
 
 /**
  * Where this device talks to, and what it says it is.

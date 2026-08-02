@@ -140,24 +140,38 @@ class ActionReceiver : BroadcastReceiver() {
 }
 
 /**
- * The status notification's "Show button" / "Hide button" was tapped.
+ * A button on the status notification was tapped.
  *
- * No network, no `goAsync`: this writes one flag and returns. [OverlayService]'s visibility
- * collector is watching that flag as Compose state and does the rest — and because a broadcast
+ * No network, no `goAsync`: each of these writes process-wide Compose state and returns.
+ * [OverlayService]'s collectors are watching that state and do the rest — and because a broadcast
  * receiver runs in the same process as the service, that is a direct read, not IPC.
  *
- * [attachSettings] first, because the receiver can be the only thing alive in a cold process (the
- * shade survives the service being killed) and without a store the write would go nowhere. Nothing
- * visible happens in that case, which is correct: there is no window to hide.
+ * [attachSettings] first, because this can be the only thing alive in a cold process: the shade
+ * outlives the service that posted to it. Nothing visible happens in that case, which is the
+ * correct outcome — there is no window to hide and no timer to pause.
  */
-class OrbToggleReceiver : BroadcastReceiver() {
+class OverlayControlReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         attachSettings(context)
         Config.load()
-        Config.saveOrbHidden(!Config.orbHidden)
-        // Repaint the action's own label. The service does this from its collector when it is
-        // running; this covers a shade entry that outlived the process it was posted from. `start`
-        // swallows the refusal a background start can earn — see its own comment.
+
+        when (intent.action) {
+            OverlayService.CONTROL_ORB -> Config.saveOrbHidden(!Config.orbHidden)
+            OverlayService.CONTROL_TIMER -> {
+                val timer = Pomodoro.shared
+                timer.reload()
+                when {
+                    timer.isRunning -> timer.pause()
+                    timer.state is TimerState.Paused -> timer.resume()
+                    else -> timer.start()
+                }
+            }
+            else -> return
+        }
+
+        // Repaint the labels, which have just changed meaning. The service does this from its own
+        // collector when it is running; this covers a shade entry that outlived the process it was
+        // posted from. `start` swallows the refusal a background start can earn — see its comment.
         OverlayService.start(context)
     }
 }

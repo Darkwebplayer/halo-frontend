@@ -258,6 +258,27 @@ class HaloState(
     }
 
     /**
+     * Something outside the overlay asked for the panel itself.
+     *
+     * Set by the shade notification's tap, which used to open the full app. The panel is where
+     * things actually get answered — it is the surface the bubble exists to reach — so a shortcut
+     * that lands somewhere else is a shortcut to the wrong place.
+     *
+     * A request rather than a command: whoever owns the window decides how to honour it, which on
+     * Android means putting the window back first if the bubble was dismissed.
+     */
+    var pendingOpen by mutableStateOf(false)
+        private set
+
+    fun requestOpen() {
+        pendingOpen = true
+    }
+
+    fun clearPendingOpen() {
+        pendingOpen = false
+    }
+
+    /**
      * Record whether the last call reached the server.
      *
      * Deliberately not a connectivity API: what matters is whether *our* calls are working, and a

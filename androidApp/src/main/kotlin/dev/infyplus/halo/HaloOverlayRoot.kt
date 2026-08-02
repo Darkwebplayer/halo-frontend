@@ -24,8 +24,14 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import dev.infyplus.halo.ui.HaloButton
+import dev.infyplus.halo.ui.HaloCard
+import dev.infyplus.halo.ui.HaloPalette
+import dev.infyplus.halo.ui.Mono
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.material3.Text
 import dev.infyplus.halo.ui.HaloConversation
 import dev.infyplus.halo.ui.HaloPanel
 import dev.infyplus.halo.ui.HaloState
@@ -125,6 +131,29 @@ fun HaloOverlayRoot(
     // job; the panel itself resolves the id once its history has loaded.
     LaunchedEffect(state.pendingScopeId) {
         if (state.pendingScopeId != null && !expanded) onExpanded(true)
+    }
+
+    // Long-pressing the orb offers to put it away rather than doing it. Hiding on the gesture alone
+    // was too easy to trigger by accident, and the thing it does is not obviously undoable from
+    // where it happens — the way back is a Quick Settings tile or a settings screen, neither of
+    // which is on the phone's face at that moment.
+    var menu by remember { mutableStateOf(false) }
+
+    // Whatever closes the panel closes this too. It lives in the same expanded window, so a menu
+    // left standing would come back the next time the panel opened, over the panel.
+    LaunchedEffect(expanded) { if (!expanded) menu = false }
+
+    if (expanded && menu) {
+        BackHandler { onExpanded(false) }
+        OrbMenu(
+            onHide = {
+                // Collapse first, so the panel is not left up over a window that is about to go.
+                onExpanded(false)
+                onHide()
+            },
+            onDismiss = { onExpanded(false) },
+        )
+        return
     }
 
     if (expanded) {
@@ -249,7 +278,10 @@ fun HaloOverlayRoot(
                         // detectors would fight over the down event — which is the bug the class
                         // comment above is about.
                         if (drag.wasTap(slop)) {
-                            if (drag.wasLongPress(longPress)) onHide() else onExpanded(true)
+                            // A hold offers the menu; a tap opens the panel. Both need the
+                            // full-screen window, so both go through onExpanded.
+                            menu = drag.wasLongPress(longPress)
+                            onExpanded(true)
                         }
                         true
                     }
@@ -280,6 +312,52 @@ fun HaloOverlayRoot(
             },
             scale = ORB_SCALE,
         )
+    }
+}
+
+/**
+ * What a hold on the orb offers.
+ *
+ * Deliberately one action and a way out. This is not a settings screen — it is the answer to "get
+ * out of my way", reachable from the thing that is in the way — and every row added to it is
+ * another thing to read while whatever you were actually doing waits underneath.
+ *
+ * Says where the button goes and how to get it back, because the gesture that opens this is the
+ * same gesture that used to hide the orb outright, and nothing on screen at that point explains
+ * that a Quick Settings tile exists.
+ */
+@Composable
+private fun OrbMenu(onHide: () -> Unit, onDismiss: () -> Unit) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) { detectTapGestures { onDismiss() } }
+            .background(Color.Black.copy(alpha = 0.28f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        HaloCard(
+            // Its own tap handler, consuming: without one, a tap on the card falls through to the
+            // scrim above and closes the menu you were reaching into.
+            Modifier
+                .padding(28.dp)
+                .pointerInput(Unit) { detectTapGestures { } },
+        ) {
+            Mono("FLOATING BUTTON")
+            Text(
+                "Hide it until you ask for it back.",
+                Modifier.padding(top = 6.dp, bottom = 12.dp),
+                fontSize = 13.sp,
+                color = HaloPalette.navy.copy(alpha = 0.75f),
+            )
+            HaloButton(label = "Hide it", modifier = Modifier.fillMaxWidth(), onClick = onHide)
+            Text(
+                "Bring it back from the Halo tile in Quick Settings, the notification, " +
+                    "or Settings in the app.",
+                Modifier.padding(top = 10.dp),
+                fontSize = 11.sp,
+                color = HaloPalette.navy.copy(alpha = 0.6f),
+            )
+        }
     }
 }
 
