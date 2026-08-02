@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -24,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.infyplus.halo.ui.HaloButton
 import dev.infyplus.halo.ui.HaloCard
+import dev.infyplus.halo.ui.HaloChip
 import dev.infyplus.halo.ui.HaloPalette
 import dev.infyplus.halo.ui.HaloField
 import dev.infyplus.halo.ui.Mono
@@ -174,6 +177,131 @@ fun CredentialsCard(onSaved: () -> Unit = {}, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * One switch and the sentence explaining what turning it off actually does.
+ *
+ * The explanation is not optional decoration: every setting in [DeviceCard] changes when a thing
+ * appears rather than whether a feature exists, and a bare label leaves the user to find out by
+ * waiting.
+ */
+@Composable
+private fun SettingRow(label: String, why: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            Modifier.weight(1f),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = HaloPalette.ink,
+        )
+        // Material's own switch, themed rather than redrawn: it already handles the drag gesture,
+        // the state description a screen reader reads out and the minimum touch target, none of
+        // which is worth reimplementing to match a border radius.
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = HaloPalette.cream,
+                checkedTrackColor = HaloPalette.navy,
+                uncheckedThumbColor = HaloPalette.cream,
+                uncheckedTrackColor = HaloPalette.body,
+                uncheckedBorderColor = HaloPalette.navy.copy(alpha = 0.32f),
+            ),
+        )
+    }
+    Text(
+        why,
+        Modifier.padding(bottom = 4.dp),
+        fontSize = 12.sp,
+        color = HaloPalette.navy.copy(alpha = 0.75f),
+    )
+}
+
+/**
+ * The settings that belong to this installation rather than to the account.
+ *
+ * Deliberately *not* gated on [Config.isConfigured], unlike [ProfileCard]: these are stored on the
+ * device and need no server, and someone who has just been handed a phone with the bubble floating
+ * over everything should be able to turn it off before finding a token.
+ */
+@Composable
+fun DeviceCard(modifier: Modifier = Modifier) {
+    HaloCard(modifier.fillMaxWidth()) {
+        Mono("FLOATING BUTTON")
+        Text(
+            "The assistant that floats over other apps.",
+            Modifier.padding(top = 4.dp, bottom = 10.dp),
+            fontSize = 13.sp,
+            color = HaloPalette.navy.copy(alpha = 0.75f),
+        )
+
+        SettingRow(
+            label = "Always on screen",
+            why = if (Config.orbAlways) {
+                "Off: it only appears when a reminder fires or a timer is running, then goes away."
+            } else {
+                "It appears when a reminder fires or a timer is running, then goes away on its own."
+            },
+            checked = Config.orbAlways,
+            onChange = { Config.saveOrbAlways(it) },
+        )
+
+        // The way back. Long-pressing the bubble hides it for good, so the one place that is
+        // guaranteed to still be reachable afterwards has to say so and offer the undo.
+        if (Config.orbHidden) {
+            Text(
+                "You closed the floating button, so it stays hidden even when something's waiting.",
+                Modifier.padding(top = 2.dp, bottom = 8.dp),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = HaloPalette.warm,
+            )
+            Row(Modifier.padding(bottom = 4.dp)) {
+                HaloChip("Bring it back") { Config.saveOrbHidden(false) }
+            }
+        } else {
+            Text(
+                "Long-press it to close it, or use Hide in the panel.",
+                Modifier.padding(bottom = 4.dp),
+                fontSize = 12.sp,
+                color = HaloPalette.navy.copy(alpha = 0.6f),
+            )
+        }
+
+        if (DeviceOptions.shadeStatus) {
+            Mono("NOTIFICATION SHADE", Modifier.padding(top = 12.dp))
+            Text(
+                "Android keeps one line in the shade while the assistant runs. This decides whether " +
+                    "it's a useful one.",
+                Modifier.padding(top = 4.dp, bottom = 10.dp),
+                fontSize = 13.sp,
+                color = HaloPalette.navy.copy(alpha = 0.75f),
+            )
+            SettingRow(
+                label = "Show what's happening",
+                why = "Carries the count, the countdown and a button to show or hide the floating button.",
+                checked = Config.shadeStatus,
+                onChange = { Config.saveShadeStatus(it) },
+            )
+        }
+
+        if (DeviceOptions.quickTile) {
+            Mono("QUICK SETTINGS", Modifier.padding(top = 12.dp))
+            Text(
+                "A tile beside wifi and the torch that shows or hides the floating button.",
+                Modifier.padding(top = 4.dp, bottom = 10.dp),
+                fontSize = 13.sp,
+                color = HaloPalette.navy.copy(alpha = 0.75f),
+            )
+            Row { HaloChip("Add the tile") { DeviceOptions.addQuickTile() } }
+        }
+    }
+}
+
 /** The Settings section: the credentials, then everything that needs a server to already work. */
 @Composable
 fun SettingsScreen(onSaved: () -> Unit = {}, modifier: Modifier = Modifier) {
@@ -182,6 +310,7 @@ fun SettingsScreen(onSaved: () -> Unit = {}, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         CredentialsCard(onSaved)
+        DeviceCard()
         // Below the credentials, and only once they exist: these settings live on the server, so
         // there is nothing to load or save until it can be reached.
         if (Config.isConfigured) ProfileCard()

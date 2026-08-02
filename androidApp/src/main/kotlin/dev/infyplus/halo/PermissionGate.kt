@@ -120,12 +120,24 @@ fun PermissionGate(content: @Composable () -> Unit) {
             enabled = blocking.isEmpty(),
         ) {
             prefs.edit().putBoolean(KEY_SETUP_DONE, true).apply()
+            // The one moment that satisfies both of the platform's rules for this prompt: the app
+            // is unambiguously in the foreground, and the user has just been walked through what
+            // Halo needs — which is as "in context" as a tile for the floating button gets.
+            //
+            // Asked once, and remembered. Android auto-denies a request the user has refused a few
+            // times, so nagging on every launch would burn the ask for good; Settings ▸ Quick
+            // Settings keeps it available for anyone who changes their mind.
+            if (!prefs.getBoolean(KEY_TILE_ASKED, false)) {
+                prefs.edit().putBoolean(KEY_TILE_ASKED, true).apply()
+                requestQuickSettingsTile(context)
+            }
             started = true
         }
     }
 }
 
 private const val KEY_SETUP_DONE = "setup_done"
+private const val KEY_TILE_ASKED = "tile_asked"
 
 /**
  * Open a settings screen, falling back to this app's own details page.

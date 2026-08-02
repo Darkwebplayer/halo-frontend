@@ -43,6 +43,8 @@
 
         <receiver android:name=".AlarmReceiver" android:exported="false" />
         <receiver android:name=".ActionReceiver" android:exported="false" />
+        <!-- The status notification's Show/Hide action. -->
+        <receiver android:name=".OrbToggleReceiver" android:exported="false" />
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
@@ -56,6 +58,24 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps the always-available assistant button on screen" />
+        </service>
+
+        <!-- Shows or hides the floating button from the pull-down panel. `exported` and the BIND
+             permission are both required by the platform: System UI is what binds this, and the
+             permission is what stops anything else from doing so. TOGGLEABLE_TILE tells the system
+             this is a two-state switch, so it is offered where a switch makes sense. -->
+        <service
+            android:name=".HaloTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_halo"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="true" />
         </service>
     </application>
 

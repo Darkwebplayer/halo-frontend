@@ -32,8 +32,13 @@ object ConversationStore {
     @Serializable
     private data class Stored(val at: Long, val turns: List<Turn>)
 
+    /**
+     * @param turns the whole thread. A thread nobody spoke into is not saved — the greeting is
+     *   written by the app, not by the user, and coming back to yesterday's "What do you need?"
+     *   is worse than coming back to a clean panel.
+     */
     fun save(turns: List<Turn>, now: Long = nowMillis()) {
-        if (turns.isEmpty()) return clear()
+        if (turns.none { it.role == "user" }) return clear()
         runCatching {
             saveSetting(KEY, json.encodeToString(Stored(now, turns.takeLast(MAX_TURNS))))
         }

@@ -2,6 +2,7 @@ package dev.infyplus.halo
 
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.serialization.kotlinx.json.json
@@ -38,9 +39,21 @@ data class Readings(val temperature: Double?, val precipitation: Double?) {
  */
 object ConditionWatcher {
 
+    /**
+     * Timeouts, because [Sync.loop] awaits this.
+     *
+     * Without them a hung socket to open-meteo stalls the one-minute loop that arms every reminder
+     * on the device — a weather lookup taking the schedule down with it. Shorter than the app's own
+     * client: this is a nice-to-have reading, not the user's data.
+     */
     private val client by lazy {
         HttpClient {
             install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+            install(HttpTimeout) {
+                requestTimeoutMillis = 15_000
+                socketTimeoutMillis = 15_000
+                connectTimeoutMillis = 10_000
+            }
         }
     }
 

@@ -44,8 +44,14 @@ fun cloudFor(
     offline: Boolean,
     countdown: String?,
     unread: Int,
+    /** Something the user asked for did not happen. Outranks everything a glance is normally for. */
+    failed: Boolean = false,
 ): String? = when {
     open -> null                        // the panel is saying it properly
+    // Above offline: a refusal is not an outage, and either way the news is that the last thing
+    // asked for did not happen. The cloud only points at it — the sentence is in HaloState.notice,
+    // where there is room for it.
+    failed -> cloudText("Failed")
     offline -> cloudText("Offline")
     countdown != null -> cloudText(countdown)
     unread > 0 -> cloudText("Due now")

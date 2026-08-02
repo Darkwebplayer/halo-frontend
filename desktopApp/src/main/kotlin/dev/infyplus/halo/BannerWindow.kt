@@ -3,7 +3,6 @@ package dev.infyplus.halo
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.DpSize
@@ -11,12 +10,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
-import dev.infyplus.halo.ui.Expression
+import dev.infyplus.halo.ui.HaloActions
 import dev.infyplus.halo.ui.HaloState
 import dev.infyplus.halo.ui.HeadsUpBanner
-import dev.infyplus.halo.ui.apiCatching
-import dev.infyplus.halo.ui.isConnectivity
-import kotlinx.coroutines.launch
 
 /**
  * The heads-up card, in its own always-on-top window.
@@ -38,7 +34,6 @@ fun BannerWindow(
     onOpenPanel: () -> Unit,
 ) {
     val notification = state.headsUp ?: return
-    val scope = rememberCoroutineScope()
 
     Window(
         onCloseRequest = { state.dismissHeadsUp() },
@@ -58,6 +53,7 @@ fun BannerWindow(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             reducedMotion = prefersReducedMotion(),
             waiting = state.headsUpWaiting,
+            notice = state.notice,
             onOpen = {
                 state.dismissHeadsUp()
                 state.requestScope(it.itemId)
@@ -66,22 +62,10 @@ fun BannerWindow(
             onAct = { fired, verb ->
                 state.dismissHeadsUp()
                 val itemId = fired.itemId ?: return@HeadsUpBanner
-                scope.launch {
-                    apiCatching { api.act(itemId, verb) }
-                        .onSuccess {
-                            Notifications.dismissFor(itemId)
-                            // Acting closes every open check-in for that item server-side, so the
-                            // count drops by the item rather than by the occurrence.
-                            state.noteUnread((state.unread - 1).coerceAtLeast(0))
-                            state.flash(
-                                if (verb == "done") Expression.Happy else Expression.Wink,
-                                1600,
-                            )
-                        }
-                        // Only a failure to *reach* the server is offline. A refusal means we got
-                        // there, and greying the cat out for it would blame the wrong thing.
-                        .onFailure { state.markOffline(it.isConnectivity()) }
-                }
+                // Deliberately NOT this window's scope. This window renders only while there is a
+                // notification to show, so the dismiss above disposes it — and used to cancel the
+                // very request it had just sent, silently. HaloActions outlives the window.
+                HaloActions.act(api, itemId, fired.title, verb, state, retry = fired)
             },
             onDismiss = { state.dismissHeadsUp() },
         )

@@ -116,8 +116,43 @@ class HaloConversation(
     var scope by mutableStateOf<Item?>(null)
         private set
 
-    fun scopeTo(item: Item?) {
+    /**
+     * Whether anyone has actually said anything.
+     *
+     * A greeting is the app talking to itself, so a thread with nothing but one is not a
+     * conversation — it must not be resumed, saved, or counted as something to leave behind.
+     */
+    val hasUserTurn: Boolean
+        get() = entries.any { it is ThreadEntry.Said && it.fromUser }
+
+    /**
+     * Set when something *outside* the panel pointed this conversation at something specific — the
+     * digest whose Chat button was pressed, or an item picked in the app — and the panel is only
+     * now opening to show it.
+     *
+     * The panel resets a conversation nobody has spoken into, which is right for reopening a
+     * thread that was never used and wrong for one that was deliberately set up a moment ago: the
+     * caller aims, the panel mounts, and the reset wipes the aim before it is ever seen. So the
+     * aim is one-shot and the panel consumes it on the way in — leaving and coming back later
+     * still starts fresh, because by then it is gone.
+     *
+     * Follows [HaloState.pendingScopeId] and its `clear` — the same "someone outside asked for
+     * this, honour it once" shape.
+     */
+    private var aimed = false
+
+    /** True once, for the open that the aim was set for. */
+    fun consumeAim(): Boolean = aimed.also { aimed = false }
+
+    /**
+     * @param aimed true when this came from outside the panel, so the panel keeps it rather than
+     *   resetting over it. The panel's own housekeeping calls leave it false.
+     */
+    fun scopeTo(item: Item?, aimed: Boolean = false) {
         scope = item
+        // A digest from an earlier visit has nothing to do with the notification being opened now.
+        reference = null
+        this.aimed = aimed
         entries.clear()
         greet()
     }
@@ -137,6 +172,8 @@ class HaloConversation(
     fun referTo(kind: SummaryKind, summary: Summary) {
         reference = kind to summary
         scope = null
+        // Only ever called from outside the panel — the Chat button on the summary card.
+        aimed = true
         entries.clear()
         greet()
     }
@@ -168,10 +205,17 @@ class HaloConversation(
         }
     }
 
-    /** Put the last conversation back, so closing the panel is not the same as ending it. */
+    /**
+     * Put the last conversation back, so closing the panel is not the same as ending it.
+     *
+     * Guarded on [hasUserTurn] rather than on the thread being empty. The caller greets first —
+     * every open does — so an empty-thread test was never true by the time this ran, and nothing
+     * was ever restored. Replacing a bare greeting is exactly the case this is for.
+     */
     fun restore() {
+        if (hasUserTurn) return
         val stored = ConversationStore.load() ?: return
-        if (entries.isNotEmpty()) return
+        entries.clear()
         stored.forEach { entries.add(ThreadEntry.Said(it.text, fromUser = it.role == "user")) }
     }
 
@@ -185,6 +229,7 @@ class HaloConversation(
         ConversationStore.clear()
         scope = null
         reference = null
+        aimed = false
         entries.clear()
         greet()
     }

@@ -30,6 +30,31 @@ fun cacheReducedMotion(context: android.content.Context) {
 actual fun prefersReducedMotion(): Boolean = reducedMotion
 
 /**
+ * Android's answers, with the tile request supplied by the app module.
+ *
+ * [offerTile] is registered rather than implemented here for the same reason [Notifications.impl]
+ * is: the tile service and its icon live in `androidApp`, which depends on this module and not the
+ * other way round. Naming the class by string to dodge that would work right up until it was
+ * renamed, and then fail silently on a real phone.
+ */
+actual object DeviceOptions {
+    actual val shadeStatus: Boolean = true
+
+    /** Set once at startup by `MainActivity`. Null in tests and in any process without an app. */
+    @Volatile
+    var offerTile: (() -> Unit)? = null
+
+    // Below API 33 there is no way to ask; the tile can still be added by hand from the Quick
+    // Settings edit screen, so a chip that does nothing would be worse than no chip.
+    actual val quickTile: Boolean
+        get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && offerTile != null
+
+    actual fun addQuickTile() {
+        offerTile?.invoke()
+    }
+}
+
+/**
  * Leading date and time of an ISO-8601 instant. Fractional seconds and the trailing `Z` are
  * ignored on purpose: the server mints every timestamp with `toISOString()`, which is always UTC,
  * and a stricter pattern would only turn a harmless format drift into a blank screen.

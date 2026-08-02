@@ -26,10 +26,25 @@ import dev.infyplus.halo.ui.HaloConversation
 import dev.infyplus.halo.ui.HaloPalette
 import dev.infyplus.halo.ui.HaloPanel
 import dev.infyplus.halo.ui.HaloState
+import dev.infyplus.halo.ui.HaloIcon
 import dev.infyplus.halo.ui.HaloTab
 import dev.infyplus.halo.ui.HaloTheme
 
 enum class AppSection { Today, Focus, Projects, Assistant, Settings }
+
+/**
+ * The glyph each section is known by while it is not the one being looked at.
+ *
+ * Assistant borrows the speech bubble the orb talks in, so the tab and the thing it opens are
+ * plainly the same feature.
+ */
+private fun AppSection.icon() = when (this) {
+    AppSection.Today -> HaloIcon.Today
+    AppSection.Focus -> HaloIcon.Focus
+    AppSection.Projects -> HaloIcon.Projects
+    AppSection.Assistant -> HaloIcon.Chat
+    AppSection.Settings -> HaloIcon.Settings
+}
 
 /**
  * The app proper, as opposed to the overlay: the same three things the popup can do, with room to
@@ -72,7 +87,7 @@ fun App(
                     Text("Halo", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = HaloPalette.ink)
                     Row(Modifier.padding(start = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         AppSection.entries.forEach { s ->
-                            HaloTab(s.name, section == s) { section = s }
+                            HaloTab(s.name, section == s, icon = s.icon()) { section = s }
                         }
                     }
                 }

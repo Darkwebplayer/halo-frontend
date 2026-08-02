@@ -16,6 +16,18 @@ actual fun getPlatform(): Platform = JVMPlatform()
 actual fun prefersReducedMotion(): Boolean = false
 
 /**
+ * Desktop has neither surface.
+ *
+ * The tray icon is already a permanent status readout with a live badge, and it is the only way to
+ * quit — so there is nothing to offer as optional. Quick Settings has no desktop equivalent at all.
+ */
+actual object DeviceOptions {
+    actual val shadeStatus: Boolean = false
+    actual val quickTile: Boolean = false
+    actual fun addQuickTile() = Unit
+}
+
+/**
  * Leading date and time of an ISO-8601 instant. Fractional seconds and the trailing `Z` are
  * ignored on purpose: the server mints every timestamp with `toISOString()`, which is always UTC,
  * and a stricter pattern would only turn a harmless format drift into a blank screen.

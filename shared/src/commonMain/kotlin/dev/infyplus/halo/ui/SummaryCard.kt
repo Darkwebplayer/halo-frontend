@@ -44,6 +44,16 @@ import kotlinx.coroutines.launch
  * after that, so a second cache here could only ever disagree with it.
  */
 
+/**
+ * What a summary actually says: the server's own description, or counts when it wrote none.
+ *
+ * One function because two places show a summary — this card and the reference card above the
+ * chat it opens — and they were disagreeing. The chat card recomputed the counts from scratch, so
+ * tapping "Chat" on a paragraph about your day replaced it with "3 due today · 1 carried over".
+ */
+internal fun summaryLine(kind: SummaryKind, summary: Summary): String =
+    summary.description.ifBlank { counts(kind, summary) }
+
 /** The plain fallback when no description could be written. Counts are better than an empty card. */
 private fun counts(kind: SummaryKind, s: Summary): String =
     if (kind == SummaryKind.Morning) {
@@ -138,7 +148,7 @@ fun SummaryCard(
             }
             s == null -> Mono("NOTHING TO SUMMARISE YET")
             else -> {
-                val text = s.description.ifBlank { counts(kind, s) }
+                val text = summaryLine(kind, s)
                 // Three lines collapsed, all of it expanded. Interpolated rather than switched so
                 // the growth is continuous and can be reversed halfway.
                 val lines = (3 + reveal * 17).toInt()

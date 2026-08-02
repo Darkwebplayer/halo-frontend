@@ -145,7 +145,6 @@ private fun ApplicationScope.Halo() {
     val conversation = remember(api) { HaloConversation(api, halo) }
 
     var expanded by remember { mutableStateOf(false) }
-    var hidden by remember { mutableStateOf(false) }
     var showApp by remember { mutableStateOf(false) }
     // Which tab the app window opens on. Set just before showing it, so "Open Halo" with alerts
     // waiting lands on the assistant instead of on Today with a number in the tray.
@@ -198,8 +197,20 @@ private fun ApplicationScope.Halo() {
         }
     }
 
+    // Whether the bubble is on screen at all — the same rule Android's overlay service applies, from
+    // the same shared function, so "only when needed" and a dismissal mean the same thing on both.
+    val bubbleVisible = orbVisible(
+        always = Config.orbAlways,
+        hidden = Config.orbHidden,
+        unread = unread,
+        headsUp = halo.headsUp != null,
+        timerRunning = timer.isRunning,
+    )
+
     DisposableEffect(Unit) {
-        GlobalHotkey.register { expanded = true; hidden = false }
+        // The hotkey is an explicit request for the bubble, so it overrides a dismissal — unlike a
+        // notification arriving, which does not.
+        GlobalHotkey.register { expanded = true; Config.saveOrbHidden(false) }
         onDispose { GlobalHotkey.unregister() }
     }
 
@@ -207,21 +218,23 @@ private fun ApplicationScope.Halo() {
     // there is no process-death problem to solve as there is on Android.
     val trayState = rememberTrayState()
     val appScope = rememberCoroutineScope()
-    // Keyed on api: reportFiredTo captures it in the onFired lambda, so new credentials must
-    // rewire it or the server would be told about firings over the old connection.
-    DisposableEffect(api) {
+    // No longer keyed on api: reportFiredTo reads the credentials at firing time, so changing
+    // servers in Settings needs nothing rewired here.
+    DisposableEffect(Unit) {
         Notifications.impl = DesktopNotifier
         DesktopNotifier.send = { title, body ->
             trayState.sendNotification(Notification(title, body, Notification.Type.Info))
         }
-        // Surface the bubble when one fires, and let the cat react to it.
+        // Let the cat react. It no longer forces the bubble back on screen: a fired notification
+        // raises `unread` and `headsUp`, which `orbVisible` already answers in "only when needed"
+        // mode — and if the bubble was dismissed outright, overriding that would make the dismissal
+        // a snooze.
         DesktopNotifier.onFired = {
-            hidden = false
             halo.wake()
             halo.flash(dev.infyplus.halo.ui.Expression.Happy, 2600)
         }
         // Delivery is local, so the server only learns what was actually shown by being told.
-        reportFiredTo(api, appScope)
+        reportFiredTo(appScope)
         // Phase-end toasts and persisted durations. Goes through notifyLocally, so unlike the
         // line above it never reports anything to the server.
         wirePomodoro(timer)
@@ -245,13 +258,17 @@ private fun ApplicationScope.Halo() {
         // It used to open on whatever tab was last looked at, so the badge pointed at something
         // the click did not take you to.
         onAction = {
-            hidden = false
+            Config.saveOrbHidden(false)
             if (unread > 0) halo.requestTab(PanelTab.Notifications)
             expanded = true
         },
         menu = {
             Item("Open Halo") { openAppOn = if (unread > 0) AppSection.Assistant else AppSection.Today; showApp = true }
-            Item(if (hidden) "Show bubble" else "Hide bubble") { hidden = !hidden }
+            // Persisted now, and shared with Android: the tray is desktop's equivalent of the Quick
+            // Settings tile, and like it, it is the way back after the bubble has been dismissed.
+            Item(if (Config.orbHidden) "Show bubble" else "Hide bubble") {
+                Config.saveOrbHidden(!Config.orbHidden)
+            }
             Item("Quit") { exitApplication() }
         },
     )
@@ -273,7 +290,10 @@ private fun ApplicationScope.Halo() {
         return
     }
 
-    BannerWindow(api = api, onOpenPanel = { hidden = false; expanded = true })
+    // Clicking the banner is an explicit ask for the panel, so like the hotkey it overrides a
+    // dismissal. The banner itself keeps showing regardless — it is a card that announces something
+    // that just fired, not the permanent bubble.
+    BannerWindow(api = api, onOpenPanel = { Config.saveOrbHidden(false); expanded = true })
 
     // Declared above the `hidden` early return on purpose: the bubble and the app window are
     // independent surfaces, and hiding the bubble must not take the window down with it.
@@ -290,7 +310,7 @@ private fun ApplicationScope.Halo() {
         }
     }
 
-    if (hidden) return
+    if (!bubbleVisible) return
 
     val state = rememberWindowState(
         size = BUBBLE_SIZE,
@@ -351,6 +371,8 @@ private fun ApplicationScope.Halo() {
                         conversation = conversation,
                         modifier = Modifier.fillMaxSize().padding(top = 62.dp),
                         onClose = { expanded = false },
+                        // Collapse first: the window is about to stop being composed entirely.
+                        onHide = { expanded = false; Config.saveOrbHidden(true) },
                         // The popup stays open behind it — the two are independent surfaces here,
                         // unlike Android where the overlay would sit on top of the app.
                         onOpenApp = { showApp = true },
@@ -444,6 +466,7 @@ private fun ApplicationScope.Halo() {
                         offline = halo.offline,
                         countdown = if (timer.isRunning) badge else null,
                         unread = halo.unread,
+                        failed = halo.notice != null,
                     ),
                     unread = halo.unread,
                     resting = halo.resting,

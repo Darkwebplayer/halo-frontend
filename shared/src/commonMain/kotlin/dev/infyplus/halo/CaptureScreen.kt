@@ -63,10 +63,28 @@ fun CaptureScreen(
     var profile by remember { mutableStateOf<Profile?>(null) }
     val scope = rememberCoroutineScope()
 
+    /**
+     * The names the plan is filed under.
+     *
+     * Fetched alongside the plan every time, not once when the screen mounts. Items carry only a
+     * `project_id`, so a project created since the last fetch has no name here — and the group
+     * header falls back to "NO PROJECT" for work that plainly has one. Capturing "add X to the
+     * kitchen rebuild" does exactly that, because the server creates the project as part of the
+     * capture.
+     */
+    suspend fun loadProjects() {
+        apiCatching { api.projects() }
+            .onSuccess { projects = it }
+            // Said out loud, because the failure is otherwise indistinguishable from having no
+            // projects: every heading falls back to "NO PROJECT" and the screen looks merely tidy.
+            .onFailure { if (error == null) error = "Couldn't load your projects — ${it.message}" }
+    }
+
     suspend fun refresh() {
         apiCatching { api.plan() }
             .onSuccess { plan = it; error = null }
             .onFailure { error = it.message }
+        loadProjects()
         loading = false
     }
 
@@ -74,13 +92,20 @@ fun CaptureScreen(
     // `recurrence_id`, and no endpoint returns either the project's name or the rule's sentence.
     // Free of charge: the assistant already had the server's answer, so adopting it beats asking
     // again. Only ever moves forward — a null means the chat has not changed anything yet.
-    LaunchedEffect(planFromChat) { planFromChat?.let { plan = it } }
+    // The names go with it: the assistant is the most likely thing to have just invented a project.
+    LaunchedEffect(planFromChat) { planFromChat?.let { plan = it; loadProjects() } }
 
     LaunchedEffect(Config.baseUrl, Config.authToken) {
         refresh()
-        apiCatching { api.projects() }.onSuccess { projects = it }
-        apiCatching { api.recurrences() }.onSuccess { rules = it }
-        apiCatching { api.profile() }.onSuccess { profile = it }
+        // Both are joins onto data already on screen, so a failure here does not empty the page —
+        // it quietly removes detail from it. "Every weekday" disappears from repeating items, and
+        // a missing profile makes the summary card default to Morning all evening.
+        apiCatching { api.recurrences() }
+            .onSuccess { rules = it }
+            .onFailure { if (error == null) error = "Couldn't load how things repeat — ${it.message}" }
+        apiCatching { api.profile() }
+            .onSuccess { profile = it }
+            .onFailure { if (error == null) error = "Couldn't load your settings — ${it.message}" }
     }
 
     /** Every button shares this: run the call, surface failures, never half-apply locally. */
@@ -218,12 +243,16 @@ fun CaptureScreen(
                 .toList()
                 .sortedWith(compareBy({ it.first == null }, { projectNames[it.first] ?: "" }))
 
+            // "NO PROJECT" is only worth printing when there is a named project beside it to be
+            // no project in contrast *to*. On a day with one unfiled reminder it labelled the
+            // absence of a distinction nobody had drawn — and read as a mistake, especially above
+            // an item whose own title happens to mention a project.
+            val named = groups.any { projectNames[it.first] != null }
+
             groups.forEach { (projectId, rows) ->
-                Mono(
-                    projectNames[projectId]?.uppercase() ?: "NO PROJECT",
-                    Modifier.padding(top = 4.dp),
-                    weight = FontWeight.Bold,
-                )
+                (projectNames[projectId]?.uppercase() ?: "NO PROJECT".takeIf { named })?.let {
+                    Mono(it, Modifier.padding(top = 4.dp), weight = FontWeight.Bold)
+                }
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     rows.forEach { ItemRow(it, cadence = it.recurrenceId?.let(cadences::get)) }
                 }

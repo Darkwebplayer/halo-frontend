@@ -92,9 +92,13 @@ fun notifyLocally(item: Scheduled) {
  * Fire-and-forget, and failures are logged rather than retried: the notification has already
  * been shown by the time this runs, so a lost report costs a row in the history — never a
  * missed reminder. Retrying would mean a queue, which is not worth it for that.
+ *
+ * The client is built **per firing**, from [Config] as it stands at that moment. It used to be
+ * handed in and captured, which meant a device that changed servers in Settings went on reporting
+ * to the old one until whatever registered this was torn down — on Android, a service restart.
+ * Constructing a [HaloApi] is a few field reads over one shared engine, so this costs nothing.
  */
 fun reportFiredTo(
-    api: HaloApi,
     scope: CoroutineScope,
     state: dev.infyplus.halo.ui.HaloState = dev.infyplus.halo.ui.HaloState.shared,
 ) {
@@ -107,7 +111,8 @@ fun reportFiredTo(
         state.showHeadsUp(item)
 
         scope.launch {
-            apiCatching { api.reportFired(item.id, item.itemId) }
+            if (!Config.isConfigured) return@launch
+            apiCatching { HaloApi(Config.baseUrl, Config.authToken).reportFired(item.id, item.itemId) }
                 .onFailure { Sync.log("could not report '${item.title}' as fired: ${it.message}") }
         }
     }

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Halo's mark as a status-bar silhouette: the ring, the dome, and two eyes cut out of it.
+
+    Traced by hand rather than derived from `ic_launcher_foreground.png`, because Android tints a
+    small icon to a single colour and masks it by alpha — a full-colour raster comes out as a solid
+    white blob. Everything here is one path so `evenOdd` can punch the ring's hole and the eyes
+    through the same fill.
+
+    Used three times: the overlay service's ongoing notification, every reminder, and the Quick
+    Settings tile.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M6.6,5.5 a5.4,2.3 0 1,0 10.8,0 a5.4,2.3 0 1,0 -10.8,0 z
+                          M8.2,5.5 a3.8,1.2 0 1,0 7.6,0 a3.8,1.2 0 1,0 -7.6,0 z
+                          M3.6,21.9 L3.6,17.7 a8.4,8.4 0 0,1 16.8,0 L20.4,21.9 z
+                          M8.25,18.4 a1.05,1.35 0 1,0 2.1,0 a1.05,1.35 0 1,0 -2.1,0 z
+                          M13.65,18.4 a1.05,1.35 0 1,0 2.1,0 a1.05,1.35 0 1,0 -2.1,0 z" />
+</vector>

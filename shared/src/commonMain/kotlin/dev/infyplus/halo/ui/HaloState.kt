@@ -56,6 +56,52 @@ class HaloState(
     private var flashJob: Job? = null
     private var restJob: Job? = null
 
+    /**
+     * Something went wrong where the user was not looking.
+     *
+     * Actions are answered in three places with no screen of their own — the heads-up banner, a
+     * notification's action buttons, the scoped card the panel closes on success — and all three
+     * used to report a failure by doing nothing at all: the banner slid away, the badge dropped,
+     * and the request had been refused. Whoever is on screen renders this; see [noteFailure] for
+     * what it says and `HaloActions` for who sets it.
+     *
+     * Transient like [flash], and for the same reason: it describes a moment, and a message that
+     * outlives the moment starts describing the wrong one.
+     */
+    var notice by mutableStateOf<String?>(null)
+        private set
+
+    private var noticeJob: Job? = null
+
+    /** Say something went wrong. Replaces any notice already showing — the newest one is the one. */
+    fun notify(text: String, ms: Long = 6_000) {
+        noticeJob?.cancel()
+        notice = text
+        noticeJob = scope.launch {
+            delay(ms)
+            notice = null
+        }
+    }
+
+    /**
+     * Report a failed request in terms of what did not happen.
+     *
+     * @param what the outcome the user was expecting, phrased as a past participle —
+     *   `"“Call the plumber” was not snoozed"`. Naming it is the whole point: "something went
+     *   wrong" leaves the user to guess whether their reminder is still coming.
+     */
+    fun noteFailure(error: Throwable, what: String) {
+        // A refusal is not an outage. Greying the character out for one blames the network for
+        // something the server decided.
+        markOffline(error.isConnectivity())
+        notify(failureNotice(error, what))
+    }
+
+    fun clearNotice() {
+        noticeJob?.cancel()
+        notice = null
+    }
+
     /** Where the face settles. Offline outranks everything — it is a hard fact, not a mood. */
     val restingExpression: Expression
         get() = if (offline) Expression.Dead else base

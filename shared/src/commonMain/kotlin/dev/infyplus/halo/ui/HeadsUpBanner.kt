@@ -74,6 +74,13 @@ fun HeadsUpBanner(
     reducedMotion: Boolean = false,
     /** How many more are queued behind this one, so the user knows to expect them. */
     waiting: Int = 0,
+    /**
+     * Why this one is back.
+     *
+     * A banner that reappears with no explanation reads as a duplicate alert. It is not — it is
+     * the same question again, because the answer did not get through.
+     */
+    notice: String? = null,
     onOpen: (Scheduled) -> Unit = {},
     onAct: (Scheduled, String) -> Unit = { _, _ -> },
     onDismiss: () -> Unit = {},
@@ -143,7 +150,17 @@ fun HeadsUpBanner(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (shown.body.isNotBlank()) {
+                    // Why it is back, in place of the body it would otherwise repeat.
+                    if (notice != null) {
+                        Text(
+                            text = notice,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = HaloPalette.warm,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    } else if (shown.body.isNotBlank()) {
                         Text(
                             text = shown.body,
                             fontSize = 12.sp,

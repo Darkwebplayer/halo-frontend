@@ -1,12 +1,18 @@
 package dev.infyplus.halo.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.animation.core.Spring
@@ -20,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import dev.infyplus.halo.prefersReducedMotion
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,32 +71,79 @@ fun Mono(
     )
 }
 
-/** A selected-state capsule. Filled navy when on, a wash of the character's blue when off. */
+/**
+ * A selected-state capsule. Filled navy when on, a wash of the character's blue when off.
+ *
+ * Given an [icon], only the selected tab spells its name out: five tabs' worth of words is most of
+ * a phone's width, and the one you are looking at is the only one that has to be readable. The
+ * others keep their glyph, which is enough to find them by, and the name comes back the moment the
+ * tab is chosen.
+ *
+ * @param badge kept visible on an unselected tab, where the label that would have carried it is
+ *   hidden. A count nobody can see is the same as no count.
+ */
 @Composable
-fun HaloTab(label: String, selected: Boolean, onClick: () -> Unit) {
-    Box(
+fun HaloTab(
+    label: String,
+    selected: Boolean,
+    icon: HaloIcon? = null,
+    badge: String? = null,
+    onClick: () -> Unit,
+) {
+    val color = if (selected) HaloPalette.cream else HaloPalette.navy
+    val reducedMotion = prefersReducedMotion()
+    // Both in sp rather than dp, so the strip grows with the system font setting the way the label
+    // inside it does.
+    //
+    // The height is fixed rather than left to the content. Letting the tallest child decide it
+    // meant the pill grew when the name appeared — a text's line box is its font's ascent and
+    // descent, which is taller than the glyph and taller again with font padding on Android, so no
+    // amount of matching the icon to the text settles it. Nailing the height down means only the
+    // width can change.
+    val glyphSize = with(LocalDensity.current) { 15.sp.toDp() }
+    val pillHeight = with(LocalDensity.current) { 26.sp.toDp() }
+    Row(
         Modifier
+            .height(pillHeight)
             .clip(HaloShapes.Pill)
             .background(if (selected) HaloPalette.navy else HaloPalette.body.copy(alpha = 0.25f))
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
+            // The name arriving and leaving is a width change, so the pill grows into it rather
+            // than snapping a letter at a time.
+            .animateContentSize(animationSpec = if (reducedMotion) snap() else spring())
+            .padding(horizontal = 10.dp)
+            // An icon on its own says nothing to a screen reader; the name it is standing in for
+            // has to be said somewhere.
+            .semantics { contentDescription = label },
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Mono(label, color = if (selected) HaloPalette.cream else HaloPalette.navy, weight = FontWeight.Bold)
+        icon?.let { HaloGlyph(it, color, size = glyphSize) }
+        when {
+            icon == null || selected -> Mono(label, color = color, weight = FontWeight.Bold)
+            badge != null -> Mono(badge, color = color, weight = FontWeight.Bold)
+        }
     }
 }
 
 /** An outlined capsule for a one-shot action — "Snooze 30m", "Mark done". */
 @Composable
-fun HaloChip(label: String, onClick: () -> Unit) {
+fun HaloChip(label: String, enabled: Boolean = true, onClick: () -> Unit) {
     Box(
         Modifier
             .clip(HaloShapes.Pill)
             .background(HaloPalette.cream)
-            .border(HaloBorder, HaloPalette.navy.copy(alpha = 0.32f), HaloShapes.Pill)
-            .clickable(onClick = onClick)
+            .border(HaloBorder, HaloPalette.navy.copy(alpha = if (enabled) 0.32f else 0.16f), HaloShapes.Pill)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
-        Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = HaloPalette.ink)
+        Text(
+            label,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            // Faded rather than hidden: a chip that vanishes mid-tap moves everything beside it.
+            color = if (enabled) HaloPalette.ink else HaloPalette.ink.copy(alpha = 0.45f),
+        )
     }
 }
 

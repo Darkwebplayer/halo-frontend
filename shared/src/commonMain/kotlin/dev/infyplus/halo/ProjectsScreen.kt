@@ -53,7 +53,9 @@ fun ProjectsScreen(api: HaloApi = remember { HaloApi(Config.baseUrl, Config.auth
         apiCatching { api.plan() }
             .onSuccess { items = it.rollover + it.today }
             .onFailure { if (error == null) error = it.message }
-        apiCatching { api.recurrences() }.onSuccess { rules = it }
+        apiCatching { api.recurrences() }
+            .onSuccess { rules = it }
+            .onFailure { if (error == null) error = it.message }
         loading = false
     }
 

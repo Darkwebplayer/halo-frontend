@@ -19,6 +19,30 @@ expect fun getPlatform(): Platform
  */
 expect fun prefersReducedMotion(): Boolean
 
+/**
+ * The two places the hosts genuinely differ about what Settings can offer.
+ *
+ * An `expect object` rather than three loose `expect fun`s, and rather than parameters threaded
+ * down from both hosts: the settings card is shared code that has to draw *fewer* rows on desktop,
+ * and this is the smallest way to say which ones.
+ */
+expect object DeviceOptions {
+    /**
+     * Whether a status notification is a thing this platform has.
+     *
+     * Android does — the overlay service must post an ongoing notification, so the only question is
+     * whether it is a useful one. Desktop's tray icon already is exactly that, permanently, with a
+     * live badge, and it is also the only way to quit — so there is nothing to make optional.
+     */
+    val shadeStatus: Boolean
+
+    /** Whether this platform can offer to add a Quick Settings tile (Android 13+ only). */
+    val quickTile: Boolean
+
+    /** Ask the system to offer the tile. A no-op wherever [quickTile] is false. */
+    fun addQuickTile()
+}
+
 /** A moment as it reads on the device's own wall clock. */
 data class LocalParts(
     val year: Int,

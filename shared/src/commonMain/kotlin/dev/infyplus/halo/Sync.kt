@@ -63,7 +63,13 @@ object Sync {
             // Completing it server-side stops it being re-armed on the next sync. Only ever set
             // on a conditional reminder, which always has an item — the item-less summaries and
             // nudges carry no condition, so they never reach here.
-            item.itemId?.let { id -> apiCatching { api.act(id, "done") } }
+            item.itemId?.let { id ->
+                apiCatching { api.act(id, "done") }
+                    // Left open server-side, so the next sync arms it again and this fires a second
+                    // time. Better a repeat than a reminder silently marked done that never was —
+                    // but it is worth being able to see in the log why it repeated.
+                    .onFailure { log("fired '${item.title}' but could not close it: ${it.message}") }
+            }
         }
         if (due.isNotEmpty()) once(api)
         return due.size

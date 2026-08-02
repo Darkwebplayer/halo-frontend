@@ -132,9 +132,18 @@ class RenderSheet {
         // Wide enough that Row never clamps a later child to nothing — same trap as the cat sheet.
         write("kit", 1000, 400) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // The app's own tab strip: only the selected one spells itself out.
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    HaloTab("Chat", selected = true) {}
-                    HaloTab("Alerts 3", selected = false) {}
+                    HaloTab("Today", selected = true, icon = HaloIcon.Today) {}
+                    HaloTab("Focus", selected = false, icon = HaloIcon.Focus) {}
+                    HaloTab("Projects", selected = false, icon = HaloIcon.Projects) {}
+                    HaloTab("Assistant", selected = false, icon = HaloIcon.Chat) {}
+                    HaloTab("Settings", selected = false, icon = HaloIcon.Settings) {}
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    HaloTab("Chat", selected = false, icon = HaloIcon.Chat) {}
+                    HaloTab("Alerts 3", selected = true, icon = HaloIcon.Bell, badge = "3") {}
+                    HaloTab("Alerts 3", selected = false, icon = HaloIcon.Bell, badge = "3") {}
                     Mono("Close")
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

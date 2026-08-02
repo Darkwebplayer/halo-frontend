@@ -56,6 +56,8 @@ private const val ORB_SCALE = 0.75f
  *
  * @param onExpanded told when the panel opens or closes, so the service can swap the window
  *   between a small touchable rectangle and a full-screen focusable one.
+ * @param onHide the user is done with the floating button altogether — long-pressed it, or used
+ *   Hide in the panel's header. The service takes the window down; the flag behind it is sticky.
  * @param onMoveTo absolute screen coordinates for the window's top-left corner while dragging.
  */
 @OptIn(ExperimentalComposeUiApi::class)
@@ -63,6 +65,7 @@ private const val ORB_SCALE = 0.75f
 fun HaloOverlayRoot(
     expanded: Boolean,
     onExpanded: (Boolean) -> Unit,
+    onHide: () -> Unit,
     onMoveTo: (Int, Int) -> Unit,
     windowX: () -> Int,
     windowY: () -> Int,
@@ -158,6 +161,8 @@ fun HaloOverlayRoot(
                     .heightIn(min = 280.dp, max = maxPanel)
                     .padding(start = 10.dp, end = 10.dp, top = 72.dp, bottom = 14.dp),
                 onClose = { onExpanded(false) },
+                // Collapse first, so the panel is not left up over a window that is about to go.
+                onHide = { onExpanded(false); onHide() },
                 onOpenApp = {
                     // Collapse first: the overlay is drawn over everything, so leaving the panel
                     // up would bury the activity it just launched.
@@ -193,6 +198,9 @@ fun HaloOverlayRoot(
 
     // ── collapsed ────────────────────────────────────────────────────────────
     val slop = ViewConfiguration.get(context).scaledTouchSlop
+    // The system's own threshold rather than a number of our own: this gesture has to feel like
+    // every other long-press on the device, including on the OEMs that tune it.
+    val longPress = ViewConfiguration.getLongPressTimeout().toLong()
     // A plain holder, not remembered `var`s: those are re-initialised on every recomposition, so
     // a drag that spans one would forget where it was grabbed and the orb would jump. And not
     // mutableStateOf either — writing this on every touch event would recompose the whole orb
@@ -231,8 +239,18 @@ fun HaloOverlayRoot(
 
                     MotionEvent.ACTION_UP -> {
                         // Only a gesture that stayed put counts as a tap, so repositioning the
-                        // orb does not spring the panel open every time.
-                        if (drag.wasTap(slop)) onExpanded(true)
+                        // orb does not spring the panel open every time. A press that stayed put
+                        // for longer than the system's own long-press timeout is the other
+                        // gesture: put the bubble away.
+                        //
+                        // Both live in this one filter because they are the same gesture until the
+                        // finger comes up. Compose's detectTapGestures could tell them apart, but
+                        // it cannot see the raw screen coordinates the drag needs, and two
+                        // detectors would fight over the down event — which is the bug the class
+                        // comment above is about.
+                        if (drag.wasTap(slop)) {
+                            if (drag.wasLongPress(longPress)) onHide() else onExpanded(true)
+                        }
                         true
                     }
 
@@ -251,6 +269,7 @@ fun HaloOverlayRoot(
                 offline = state.offline,
                 countdown = if (timer.isRunning) countdown else null,
                 unread = state.unread,
+                failed = state.notice != null,
             ),
             unread = state.unread,
             resting = state.resting,
@@ -276,8 +295,10 @@ private class DragTracker {
     private var downX = 0f
     private var downY = 0f
     private var travelled = 0f
+    private var downAt = 0L
 
     fun start(rawX: Float, rawY: Float, windowX: Int, windowY: Int) {
+        downAt = android.os.SystemClock.uptimeMillis()
         // Where inside the window it was grabbed — without this the orb jumps so its top-left
         // corner meets the finger.
         grabX = rawX - windowX
@@ -296,4 +317,13 @@ private class DragTracker {
     fun targetY(rawY: Float) = (rawY - grabY).toInt()
 
     fun wasTap(slop: Int) = travelled < slop
+
+    /**
+     * How long the finger was down. Only meaningful together with [wasTap] — a slow drag is not a
+     * long press, however long it took.
+     *
+     * `uptimeMillis` rather than wall-clock, so a clock change mid-gesture cannot make a tap look
+     * like a long press.
+     */
+    fun wasLongPress(timeoutMs: Long) = android.os.SystemClock.uptimeMillis() - downAt >= timeoutMs
 }

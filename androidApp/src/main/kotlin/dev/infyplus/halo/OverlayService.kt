@@ -3,10 +3,12 @@ package dev.infyplus.halo
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
@@ -14,12 +16,18 @@ import android.view.Gravity
 import android.view.WindowManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.ComposeView
+import dev.infyplus.halo.ui.HaloState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
@@ -54,6 +62,11 @@ class OverlayService : Service() {
     private lateinit var params: WindowManager.LayoutParams
     private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    // The same process-wide singletons the composables default to. Named here because the window
+    // and the notification are decided outside any composition and still have to agree with it.
+    private val state = HaloState.shared
+    private val timer = Pomodoro.shared
+
     /** Compose reads this; the window layout follows it. */
     private var expanded by mutableStateOf(false)
 
@@ -78,20 +91,25 @@ class OverlayService : Service() {
             stopSelf()
             return
         }
-        showOverlay()
-
         // The overlay is often running with no activity alive, so the timer's settings and its
         // phase-end notifications have to be wired here too. Both calls are idempotent.
+        //
+        // Ahead of any window work now, not after it: whether there is supposed to *be* a window is
+        // one of the things this reads back.
         attachSettings(this)
         Config.load()
+
+        showBanner()
+        watchVisibility()
+        watchNotification()
         // After attachSettings, which is what supplies the context this needs.
         startNetworkWatch()
         wirePomodoro()
-        val api = HaloApi(Config.baseUrl, Config.authToken)
         // Covers the condition-watcher path, which fires through Notifications rather than an
         // alarm. Alarms report from AlarmReceiver instead, where goAsync can hold the process
-        // open for the call.
-        reportFiredTo(api, syncScope)
+        // open for the call. Reads the credentials at firing time, so changing servers needs no
+        // restart of this service.
+        reportFiredTo(syncScope)
 
         // A plain in-process coroutine loop, deliberately — NOT WorkManager or JobScheduler.
         //
@@ -118,28 +136,44 @@ class OverlayService : Service() {
         }
         if (view != null) return
 
-        params = WindowManager.LayoutParams(
-            dp(COMPACT_W),
-            dp(COMPACT_H),
-            overlayType(),
-            COLLAPSED_FLAGS,
-            PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = 0
-            y = dp(240)
+        // Built once per service, not once per window. The orb can now come and go many times over
+        // one service — hidden and brought back, or appearing only when something needs an answer —
+        // and rebuilding these each time would return it to the default corner every single time,
+        // forgetting wherever it was parked.
+        if (!::params.isInitialized) {
+            params = WindowManager.LayoutParams(
+                dp(COMPACT_W),
+                dp(COMPACT_H),
+                overlayType(),
+                COLLAPSED_FLAGS,
+                PixelFormat.TRANSLUCENT,
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = 0
+                y = dp(240)
+            }
+            // Seeded from where the window actually starts. These are what `applyMode` restores on
+            // collapse, and left at their 0/0 default the first close of the panel would drop the
+            // orb into the top corner even though it had never been dragged there.
+            collapsedX = params.x
+            collapsedY = params.y
         }
 
-        val api = HaloApi(Config.baseUrl, Config.authToken)
         val composeView = ComposeView(this).apply {
             setContent {
+                // Built inside the composition, keyed on the credentials. [Config] is Compose
+                // state, so saving new ones in Settings rebuilds this client where it is used —
+                // which is what the activity's stop/start of this whole service used to be for.
                 HaloOverlayRoot(
                     expanded = expanded,
                     onExpanded = { open -> expanded = open; applyMode(open) },
+                    onHide = { Config.saveOrbHidden(true) },
                     onMoveTo = { x, y -> moveTo(x, y) },
                     windowX = { params.x },
                     windowY = { params.y },
-                    api = api,
+                    api = remember(Config.baseUrl, Config.authToken) {
+                        HaloApi(Config.baseUrl, Config.authToken)
+                    },
                 )
             }
         }
@@ -156,8 +190,106 @@ class OverlayService : Service() {
             return
         }
         view = composeView
+    }
 
-        showBanner(api)
+    /**
+     * Take the orb's window down without touching anything else.
+     *
+     * Deliberately not `stopSelf()`. This service is also the sync loop, the pomodoro wiring and the
+     * condition watcher, and since Android 15 the `SYSTEM_ALERT_WINDOW` exemption for starting a
+     * foreground service from the background requires an overlay window that is *already visible* —
+     * so a service that stopped itself when the bubble was hidden might not be able to start again
+     * to bring it back.
+     *
+     * The banner window stays too: it is a six-second card announcing something that just fired,
+     * and in "only when needed" mode it is the thing that brings the orb back.
+     */
+    private fun hideOverlay() {
+        val v = view ?: return
+        // Collapse first. Removing a full-screen focusable window mid-panel leaves the IME up and
+        // the next `showOverlay` would rebuild it at the expanded size.
+        if (expanded) {
+            expanded = false
+            applyMode(false)
+        }
+        runCatching { windowManager.removeView(v) }
+        host.detach()
+        view = null
+    }
+
+    /**
+     * The one thing that decides whether the orb is on screen, for the life of the service.
+     *
+     * A `snapshotFlow` rather than callbacks from each of the places that could change the answer:
+     * the settings switch, the Quick Settings tile, the notification's action, a reminder firing,
+     * the minute poll and the pomodoro all write Compose state on the same process-wide singletons,
+     * so reading them is the only subscription needed. [orbVisible] is where the rule itself lives —
+     * shared with desktop, and tested.
+     *
+     * On Main, because `addView`/`removeView` are main-thread calls and because this has to reach
+     * the *same* thread the composition writes those singletons from.
+     *
+     * One dependency worth naming: Compose only hands a snapshot change to `snapshotFlow` once
+     * something calls `Snapshot.sendApplyNotifications()`, and what does that on Android is
+     * `GlobalSnapshotManager`, started by the first `ComposeView` in the process. [showBanner] below
+     * always makes one, and it is never taken down — which is the other reason the banner window
+     * stays up while the orb is hidden.
+     */
+    private fun watchVisibility() {
+        syncScope.launch(Dispatchers.Main) {
+            snapshotFlow {
+                orbVisible(
+                    always = Config.orbAlways,
+                    hidden = Config.orbHidden,
+                    unread = state.unread,
+                    headsUp = state.headsUp != null,
+                    timerRunning = timer.isRunning,
+                )
+            }
+                .distinctUntilChanged()
+                .collect { visible -> if (visible) showOverlay() else hideOverlay() }
+        }
+    }
+
+    /**
+     * Keep the ongoing notification saying what is actually happening.
+     *
+     * Only while [Config.shadeStatus] is on does this have anything to report — the minimal line has
+     * no live content, so collecting for it would re-post a notification nobody can read for the
+     * sake of a countdown nobody can see. The setting itself is in the key, so turning it on starts
+     * reporting immediately and turning it off puts the quiet line back.
+     *
+     * On Main for the same reason as [watchVisibility], plus one of its own: `catchUp` below is the
+     * only place this service advances the timer, and the overlay's own one-second loop does the
+     * same thing from the composition. Both on one thread means "idempotent" is enough — off it,
+     * two concurrent catch-ups could hand out two phase-end notifications for one boundary.
+     */
+    private fun watchNotification() {
+        syncScope.launch(Dispatchers.Main) {
+            snapshotFlow {
+                listOf(Config.shadeStatus, Config.orbHidden, state.unread, state.offline, timer.state)
+            }
+                .distinctUntilChanged()
+                // Cancels the tick below whenever any of those changes, so there is never more than
+                // one loop re-posting the same notification.
+                .collectLatest {
+                    // `timer.display()` is derived from the clock rather than held as state, so a
+                    // running countdown produces no snapshot change at all — it has to be ticked.
+                    // The loop exits immediately when nothing is counting down, which is why an idle
+                    // phone pays nothing for it.
+                    while (true) {
+                        // Nothing else ticks the timer while the orb is hidden, so a phase would
+                        // otherwise run past its end and sit there. Idempotent by design.
+                        timer.catchUp()
+                        // Re-issuing startForeground on an already-foreground service updates its
+                        // notification, and is what lets the channel change when the setting is
+                        // toggled. Guarded: the OS can refuse once the service is on its way out.
+                        runCatching { startForeground(NOTIFICATION_ID, buildNotification()) }
+                        if (!Config.shadeStatus || !timer.isRunning) break
+                        delay(1000)
+                    }
+                }
+        }
     }
 
     /**
@@ -171,8 +303,10 @@ class OverlayService : Service() {
      * `WRAP_CONTENT` height means only the strip itself is touchable and everything below passes
      * through. Added after the orb, so it stacks above it.
      */
-    private fun showBanner(api: HaloApi) {
+    private fun showBanner() {
         if (bannerView != null) return
+        // Its own check now that it no longer hangs off showOverlay, which used to make it for both.
+        if (!Settings.canDrawOverlays(this)) return
 
         val bannerParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -188,7 +322,9 @@ class OverlayService : Service() {
         val v = ComposeView(this).apply {
             setContent {
                 HaloBannerHost(
-                    api = api,
+                    api = remember(Config.baseUrl, Config.authToken) {
+                        HaloApi(Config.baseUrl, Config.authToken)
+                    },
                     onOpenPanel = {
                         if (!expanded) {
                             expanded = true
@@ -274,29 +410,101 @@ class OverlayService : Service() {
         super.onDestroy()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        showOverlay()
-        return START_STICKY
-    }
+    /**
+     * Restarted by the system, or poked by [start].
+     *
+     * Deliberately not `showOverlay()` any more: a dismissed bubble must stay dismissed across a
+     * restart, and [watchVisibility]'s collector re-evaluates on its own the moment it is relaunched
+     * in a fresh `onCreate`. A restart into an existing process needs nothing here at all.
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
+    /**
+     * The ongoing notification Android insists on while this service runs.
+     *
+     * Two shapes, and two channels — importance cannot be changed on a channel that already exists,
+     * so the quiet line and the useful one cannot share one. Off, it is what it always was: a
+     * minimum-importance line that sinks to the bottom of the shade and stays out of the way. On, it
+     * does the floating button's job from the shade, which is the whole point of the setting.
+     */
     private fun buildNotification(): Notification {
-        val manager = getSystemService(NotificationManager::class.java)
+        val rich = Config.shadeStatus
+        val channel = if (rich) STATUS_CHANNEL_ID else CHANNEL_ID
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "Halo overlay", NotificationManager.IMPORTANCE_MIN)
-                    .apply { description = "Keeps the floating Halo assistant available." },
+                if (rich) {
+                    NotificationChannel(
+                        STATUS_CHANNEL_ID,
+                        "Halo status",
+                        // LOW, not MIN: it is meant to be read. Still silent — there is nothing new
+                        // to announce, the reminders channel does that.
+                        NotificationManager.IMPORTANCE_LOW,
+                    ).apply { description = "What Halo is doing, kept in the shade." }
+                } else {
+                    NotificationChannel(CHANNEL_ID, "Halo overlay", NotificationManager.IMPORTANCE_MIN)
+                        .apply { description = "Keeps the floating Halo assistant available." }
+                },
             )
         }
-        return Notification.Builder(this, CHANNEL_ID)
+
+        val builder = Notification.Builder(this, channel)
             .setContentTitle("Halo")
-            .setContentText("Floating assistant is active")
-            .setSmallIcon(android.R.drawable.ic_menu_edit)
+            .setSmallIcon(R.drawable.ic_stat_halo)
             .setOngoing(true)
+
+        if (!rich) {
+            return builder.setContentText("Floating assistant is active").build()
+        }
+
+        return builder
+            .setContentText(statusLine())
+            .setLargeIcon(Icon.createWithResource(this, R.mipmap.ic_launcher))
+            // The timestamp is meaningless on something that has been there since boot, and it
+            // costs the width the status line wants.
+            .setShowWhen(false)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this,
+                    0,
+                    Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                ),
+            )
+            .addAction(
+                Notification.Action.Builder(
+                    null as Icon?,
+                    if (Config.orbHidden) "Show button" else "Hide button",
+                    PendingIntent.getBroadcast(
+                        this,
+                        0,
+                        Intent(this, OrbToggleReceiver::class.java),
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                    ),
+                ).build(),
+            )
             .build()
+    }
+
+    /**
+     * One line saying what the orb would be saying, in the same order of precedence it uses.
+     *
+     * Offline first because it is a hard fact rather than a mood, then the countdown, then what is
+     * waiting — the ranking [dev.infyplus.halo.ui.HaloState.rederive] already settled.
+     */
+    private fun statusLine(): String = when {
+        state.offline -> "Can't reach your server"
+        timer.isRunning -> "${timer.phase.label()} · ${timer.display()}"
+        state.unread == 1 -> "1 thing waiting for you"
+        state.unread > 1 -> "${state.unread} things waiting for you"
+        else -> "Nothing needs you"
     }
 
     companion object {
         private const val CHANNEL_ID = "halo_overlay"
+
+        /** The useful line's channel. Separate because a channel's importance is fixed once made. */
+        private const val STATUS_CHANNEL_ID = "halo_status"
         private const val NOTIFICATION_ID = 1
 
         /**
@@ -324,15 +532,26 @@ class OverlayService : Service() {
         // handling and would put the composer under the keyboard.
         private const val EXPANDED_FLAGS = WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
 
-        /** No-op unless the overlay permission is actually held. */
+        /**
+         * No-op unless the overlay permission is actually held, and never fatal.
+         *
+         * Guarded here rather than at each call site because the callers are a settings screen, a
+         * Quick Settings tile and a broadcast receiver — none of which is in a position to do
+         * anything useful about a refusal, and two of which crash the process on an unhandled one.
+         * Android 12+ refuses a background start outright, and since Android 15 the
+         * `SYSTEM_ALERT_WINDOW` exemption needs an overlay window that is *already* visible — which
+         * is exactly what is missing when something is trying to bring the hidden bubble back.
+         */
         fun start(context: Context) {
             if (!Settings.canDrawOverlays(context)) return
             val intent = Intent(context, OverlayService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            }.onFailure { Sync.log("overlay service start refused: ${it.message}") }
         }
 
         fun stop(context: Context) {

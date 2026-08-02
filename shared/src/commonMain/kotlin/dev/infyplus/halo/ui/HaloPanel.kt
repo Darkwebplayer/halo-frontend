@@ -33,6 +33,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -81,6 +82,14 @@ fun HaloPanel(
      */
     onOpenApp: (() -> Unit)? = null,
     /**
+     * Dismiss the floating button entirely, not just this panel.
+     *
+     * Supplied only by the two hosts that *have* a floating button, so the in-app Assistant tab
+     * does not offer to hide something it is not. Long-pressing the bubble does the same thing;
+     * this is the discoverable half of that gesture.
+     */
+    onHide: (() -> Unit)? = null,
+    /**
      * True when the caller sized this panel by its content rather than by a window.
      *
      * Only the floating overlay does. Everything else hands the panel a fixed height and expects
@@ -98,7 +107,14 @@ fun HaloPanel(
     val density = LocalDensity.current
 
     LaunchedEffect(Unit) {
-        if (conversation.entries.isEmpty()) {
+        // Resume only a thread that was actually spoken into. The conversation outlives the panel
+        // on both hosts, so opening a notification, reading it and closing used to leave that
+        // greeting and its card sitting there for the next visit — a session nobody had.
+        //
+        // Unless whoever opened this panel had just aimed the conversation at something — the
+        // summary they pressed Chat on. That is the session, and resetting over it would land
+        // them in whatever they were talking about yesterday instead.
+        if (!conversation.consumeAim() && !conversation.hasUserTurn) {
             conversation.scopeTo(initialScope)
             // Only when opening cold and unscoped. A panel opened *on* a notification is about
             // that notification; putting an unrelated conversation above it would bury the thing
@@ -193,10 +209,14 @@ fun HaloPanel(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                HaloTab("Chat", tab == PanelTab.Chat) { tab = PanelTab.Chat }
+                HaloTab("Chat", tab == PanelTab.Chat, icon = HaloIcon.Chat) { tab = PanelTab.Chat }
                 HaloTab(
                     label = if (state.unread > 0) "Alerts ${state.unread}" else "Alerts",
                     selected = tab == PanelTab.Notifications,
+                    icon = HaloIcon.Bell,
+                    // The count is the reason to look at this tab, so it survives the name being
+                    // hidden.
+                    badge = state.unread.takeIf { it > 0 }?.toString(),
                 ) { tab = PanelTab.Notifications }
                 // Offered only once there is something to leave behind — the conversation now
                 // outlives the panel, so there has to be a way to put it down.
@@ -206,6 +226,12 @@ fun HaloPanel(
                         Modifier.clickable { conversation.startNew() }.padding(4.dp),
                         color = HaloPalette.warm,
                     )
+                }
+                // Ahead of Close, and in the warning colour, because the two read as neighbours and
+                // do very different things: one puts the panel down, the other takes the floating
+                // button off the screen until it is asked back.
+                onHide?.let { hide ->
+                    Mono("Hide", Modifier.clickable(onClick = hide).padding(4.dp), color = HaloPalette.warm)
                 }
                 if (showClose) Mono("Close", Modifier.clickable(onClick = onClose).padding(4.dp))
             }
@@ -244,24 +270,28 @@ fun HaloPanel(
         when (tab) {
             PanelTab.Chat -> {
                 conversation.scope?.let { item ->
-                    ScopedCard(item) { verb ->
+                    // Guarded against a second tap: two taps on Snooze used to be two snoozes.
+                    var acting by remember(item.id) { mutableStateOf(false) }
+                    ScopedCard(item, enabled = !acting) { verb ->
+                        acting = true
+                        // Runs on HaloActions' own scope, not the panel's: the panel closes
+                        // itself on success, and a request tied to it would be cancelled by its
+                        // own outcome. Only the follow-up below belongs to this composition.
+                        HaloActions.act(api, item.id, item.title, verb, state) {
+                            conversation.entries.add(
+                                ThreadEntry.Routed("command → edit on known item", question = false),
+                            )
+                            conversation.entries.add(
+                                ThreadEntry.Said(verb.pastTense(item.title), fromUser = false),
+                            )
+                            refreshCheckins()
+                            returnToAlerts()
+                        }
+                        // Re-armed by the card leaving the screen on success; on failure the user
+                        // is told what happened and can try again.
                         scope.launch {
-                            apiCatching { api.act(item.id, verb) }
-                                .onSuccess {
-                                    // The notification about it is now stale wherever it shows.
-                                    dev.infyplus.halo.Notifications.dismissFor(item.id)
-                                    conversation.entries.add(
-                                        ThreadEntry.Routed("command → edit on known item", question = false),
-                                    )
-                                    conversation.entries.add(
-                                        ThreadEntry.Said(verb.pastTense(item.title), fromUser = false),
-                                    )
-                                    state.noteUnread((state.unread - 1).coerceAtLeast(0))
-                                    state.flash(Expression.Happy, 1600)
-                                    refreshCheckins()
-                                    returnToAlerts()
-                                }
-                                .onFailure { state.markOffline(it.isConnectivity()) }
+                            kotlinx.coroutines.delay(1_500)
+                            acting = false
                         }
                     }
                 }
@@ -306,7 +336,19 @@ fun HaloPanel(
             },
         )
 
-        if (state.offline) {
+        // Above the offline strip and instead of it: a notice is about one specific thing that did
+        // not happen, which is more useful than the general condition that may have caused it.
+        state.notice?.let {
+            Text(
+                it,
+                Modifier.fillMaxWidth().padding(top = 6.dp),
+                color = HaloPalette.warm,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+
+        if (state.offline && state.notice == null) {
             Text(
                 "Connection lost · nothing is being sent",
                 Modifier.fillMaxWidth().padding(top = 6.dp),
@@ -328,7 +370,7 @@ private fun String.pastTense(title: String) = when (this) {
 /** The item a notification fired for, with the only three actions the server actually supports. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ScopedCard(item: Item, onAct: (String) -> Unit) {
+private fun ScopedCard(item: Item, enabled: Boolean = true, onAct: (String) -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -353,9 +395,11 @@ private fun ScopedCard(item: Item, onAct: (String) -> Unit) {
             Modifier.padding(top = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            HaloChip(SNOOZE_LABEL) { onAct("snooze") }
-            HaloChip("Tomorrow 9am") { onAct("reschedule") }
-            HaloChip("Mark done") { onAct("done") }
+            // Disabled while one is in flight — the server answers every open check-in for the
+            // item at once, so a second tap is a second snooze on top of the first.
+            HaloChip(SNOOZE_LABEL, enabled = enabled) { onAct("snooze") }
+            HaloChip("Tomorrow 9am", enabled = enabled) { onAct("reschedule") }
+            HaloChip("Mark done", enabled = enabled) { onAct("done") }
         }
     }
 }
@@ -495,16 +539,17 @@ private fun SummaryReferenceCard(
             Mono(if (morning) "ABOUT YOUR MORNING" else "ABOUT YOUR EVENING", weight = FontWeight.Bold)
             Mono("DISMISS", Modifier.clickable(onClick = onDismiss), color = HaloPalette.warm)
         }
+        // The summary itself, not a recount of it — this card exists to keep what the user was
+        // reading in front of them, and it used to replace that paragraph with two numbers.
         Text(
-            if (morning) {
-                "${summary.today.size} due today · ${summary.unattended.size} carried over"
-            } else {
-                "${summary.done.size} done · ${summary.open.size} still open"
-            },
+            summaryLine(kind, summary),
             Modifier.padding(top = 4.dp),
-            fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold,
+            fontSize = 13.sp,
+            lineHeight = 19.sp,
             color = HaloPalette.ink,
+            // Enough to recognise it by; the whole thing is a tab away on Today.
+            maxLines = 6,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }

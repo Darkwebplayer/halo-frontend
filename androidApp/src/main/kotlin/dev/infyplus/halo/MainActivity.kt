@@ -19,6 +19,11 @@ class MainActivity : ComponentActivity() {
         // attach the settings store and wire the timer. Both are idempotent.
         attachSettings(this)
         Config.load()
+        // The shared settings screen offers the tile, but the tile service and its icon live in
+        // this module — so the action is registered rather than implemented over there, the same
+        // way `Notifications.impl` is. Application context: the prompt only needs the *app* to be
+        // in the foreground, and holding an activity in a process-wide object would leak it.
+        DeviceOptions.offerTile = { requestQuickSettingsTile(applicationContext) }
         // After attachSettings, which is what supplies the context this needs. Idempotent, so the
         // overlay service starting it too costs nothing.
         startNetworkWatch()
@@ -33,13 +38,11 @@ class MainActivity : ComponentActivity() {
             HaloTheme {
                 SetupGate {
                     PermissionGate {
-                        App(onCredentialsChanged = {
-                            // The overlay holds a HaloApi built in onCreate that no Compose state
-                            // can reach. Restarting is racy on its own, but PermissionGate calls
-                            // start() again on every resume, so it settles.
-                            OverlayService.stop(this)
-                            OverlayService.start(this)
-                        })
+                        // No longer restarts the overlay service on a credentials change: the
+                        // overlay builds its clients from Config inside its own composition, and
+                        // Config is Compose state, so it follows along on its own. The stop/start
+                        // that used to be here raced its own restart.
+                        App()
                     }
                 }
             }

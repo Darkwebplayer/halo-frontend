@@ -230,7 +230,7 @@ object AndroidNotifier : Notifier {
         val builder = Notification.Builder(context, CHANNEL_ID)
             .setContentTitle(item.title)
             .setContentText(item.body)
-            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setSmallIcon(R.drawable.ic_stat_halo)
             .setAutoCancel(true)
             .setContentIntent(open)
 
