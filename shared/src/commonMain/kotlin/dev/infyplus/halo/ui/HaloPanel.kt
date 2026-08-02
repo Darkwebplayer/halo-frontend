@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -28,6 +29,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
@@ -77,6 +80,13 @@ fun HaloPanel(
      * which is what keeps the title from being a button that goes nowhere.
      */
     onOpenApp: (() -> Unit)? = null,
+    /**
+     * True when the caller sized this panel by its content rather than by a window.
+     *
+     * Only the floating overlay does. Everything else hands the panel a fixed height and expects
+     * the composer pinned to the bottom of it, which is a weight — see `middle` below.
+     */
+    growWithContent: Boolean = false,
 ) {
     var tab by remember { mutableStateOf(initialTab) }
     var draft by remember { mutableStateOf("") }
@@ -85,9 +95,16 @@ fun HaloPanel(
     var checkinsLoaded by remember { mutableStateOf(false) }
     var checkinsError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
 
     LaunchedEffect(Unit) {
-        if (conversation.entries.isEmpty()) conversation.scopeTo(initialScope)
+        if (conversation.entries.isEmpty()) {
+            conversation.scopeTo(initialScope)
+            // Only when opening cold and unscoped. A panel opened *on* a notification is about
+            // that notification; putting an unrelated conversation above it would bury the thing
+            // the user came here for.
+            if (initialScope == null) conversation.restore()
+        }
     }
 
     suspend fun refreshCheckins() {
@@ -172,12 +189,24 @@ fun HaloPanel(
                 color = HaloPalette.ink,
                 textDecoration = if (onOpenApp != null) TextDecoration.Underline else null,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 HaloTab("Chat", tab == PanelTab.Chat) { tab = PanelTab.Chat }
                 HaloTab(
                     label = if (state.unread > 0) "Alerts ${state.unread}" else "Alerts",
                     selected = tab == PanelTab.Notifications,
                 ) { tab = PanelTab.Notifications }
+                // Offered only once there is something to leave behind — the conversation now
+                // outlives the panel, so there has to be a way to put it down.
+                if (tab == PanelTab.Chat && conversation.entries.size > 1) {
+                    Mono(
+                        "New",
+                        Modifier.clickable { conversation.startNew() }.padding(4.dp),
+                        color = HaloPalette.warm,
+                    )
+                }
                 if (showClose) Mono("Close", Modifier.clickable(onClick = onClose).padding(4.dp))
             }
         }
@@ -185,6 +214,32 @@ fun HaloPanel(
         // Above the tab body rather than inside it, so the timer is reachable from Chat and Alerts
         // alike — the whole point of putting it here is not having to hunt for it.
         PomodoroStrip(modifier = Modifier.padding(bottom = 10.dp))
+
+        // How tall the scrolling middle is.
+        //
+        // Two hosts want opposite things. In a fixed window — desktop, and the in-app Assistant —
+        // the middle should absorb whatever is left so the composer sits on the bottom edge, which
+        // is what `weight(1f)` has always done. In the floating overlay the panel is sized by its
+        // content, and a weight there would divide up a height nobody has decided yet, so it needs
+        // a range instead. Both branches below are lazy lists, which throw outright rather than
+        // grow when measured with an unbounded height, so the cap is not optional.
+        //
+        // The minimum only ever climbs while the panel is open. Chat and Alerts genuinely have
+        // different content heights, and without a high-water mark the panel would jump smaller
+        // every time you glanced at your alerts and back. It resets when the conversation does,
+        // which is the one moment the old size stops meaning anything.
+        var tallest by remember { mutableStateOf(0.dp) }
+        LaunchedEffect(conversation.entries.size) {
+            if (conversation.entries.isEmpty()) tallest = 0.dp
+        }
+        val middle = if (growWithContent) {
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = maxOf(120.dp, tallest), max = 520.dp)
+                .onSizeChanged { with(density) { tallest = maxOf(tallest, it.height.toDp()) } }
+        } else {
+            Modifier.fillMaxWidth().weight(1f)
+        }
 
         when (tab) {
             PanelTab.Chat -> {
@@ -215,12 +270,12 @@ fun HaloPanel(
                 conversation.reference?.let { (kind, summary) ->
                     SummaryReferenceCard(kind, summary) { conversation.clearReference() }
                 }
-                ThreadView(conversation.entries, Modifier.weight(1f))
+                ThreadView(conversation.entries, middle)
             }
 
             PanelTab.Notifications -> NotificationList(
                 checkins = checkins,
-                modifier = Modifier.weight(1f),
+                modifier = middle,
                 loaded = checkinsLoaded,
                 error = checkinsError,
                 onOpen = { checkin ->
@@ -503,7 +558,9 @@ private fun NotificationList(
     onOpen: (CheckIn) -> Unit,
 ) {
     if (checkins.isEmpty()) {
-        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        // Not fillMaxSize: the panel is sized by its content now, and an empty alerts tab that
+        // claims the whole allowance would make the panel taller when there is nothing in it.
+        Box(modifier.padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 when {
                     !loaded -> Mono("LOADING…")

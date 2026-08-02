@@ -46,11 +46,22 @@ class HaloApi(
      * One round-trip: the server classifies and acts, then returns both the outcome and what to
      * say. [itemId] scopes it to a notification being replied to.
      */
-    suspend fun message(text: String, itemId: String? = null): MessageResponse = call {
+    suspend fun message(
+        text: String,
+        itemId: String? = null,
+        history: List<Turn> = emptyList(),
+    ): MessageResponse = call {
         val res = client.post("$baseUrl/message") {
             contentType(ContentType.Application.Json)
             header("authorization", "Bearer $authToken")
-            setBody(MessageRequest(text = text, itemId = itemId, tz = deviceTimeZone()))
+            setBody(
+                MessageRequest(
+                    text = text,
+                    itemId = itemId,
+                    tz = deviceTimeZone(),
+                    history = history,
+                ),
+            )
         }
         if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
         res.body()

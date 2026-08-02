@@ -53,8 +53,13 @@ fun App(
      * rebuild for them — on Android, the one the overlay service closed over.
      */
     onCredentialsChanged: () -> Unit = {},
+    /**
+     * Which tab to open on. The tray's "Open Halo" uses it to land on the assistant when something
+     * is waiting, rather than always dropping the user on Today and letting them find it.
+     */
+    initialSection: AppSection = AppSection.Today,
 ) {
-    var section by remember { mutableStateOf(AppSection.Today) }
+    var section by remember { mutableStateOf(initialSection) }
 
     HaloTheme {
         Surface(modifier = Modifier.fillMaxSize().safeContentPadding()) {

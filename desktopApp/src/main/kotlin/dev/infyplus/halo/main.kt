@@ -147,6 +147,9 @@ private fun ApplicationScope.Halo() {
     var expanded by remember { mutableStateOf(false) }
     var hidden by remember { mutableStateOf(false) }
     var showApp by remember { mutableStateOf(false) }
+    // Which tab the app window opens on. Set just before showing it, so "Open Halo" with alerts
+    // waiting lands on the assistant instead of on Today with a number in the tray.
+    var openAppOn by remember { mutableStateOf(AppSection.Today) }
     var badge by remember { mutableStateOf("J") }
     val unread = halo.unread
 
@@ -238,9 +241,16 @@ private fun ApplicationScope.Halo() {
             append(if (timer.isRunning) "Focus: $badge" else "Halo")
             append(if (GlobalHotkey.registered) "  (Ctrl/Cmd+Shift+J)" else "  — hotkey unavailable")
         },
-        onAction = { hidden = false; expanded = true },
+        // Clicking the tray when the icon is showing a count should go to the thing being counted.
+        // It used to open on whatever tab was last looked at, so the badge pointed at something
+        // the click did not take you to.
+        onAction = {
+            hidden = false
+            if (unread > 0) halo.requestTab(PanelTab.Notifications)
+            expanded = true
+        },
         menu = {
-            Item("Open Halo") { showApp = true }
+            Item("Open Halo") { openAppOn = if (unread > 0) AppSection.Assistant else AppSection.Today; showApp = true }
             Item(if (hidden) "Show bubble" else "Hide bubble") { hidden = !hidden }
             Item("Quit") { exitApplication() }
         },
@@ -276,7 +286,7 @@ private fun ApplicationScope.Halo() {
             state = rememberWindowState(size = DpSize(920.dp, 720.dp)),
             title = "Halo",
         ) {
-            App(api = api, conversation = conversation)
+            App(api = api, conversation = conversation, initialSection = openAppOn)
         }
     }
 

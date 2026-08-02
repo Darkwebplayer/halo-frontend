@@ -12,6 +12,7 @@ import dev.infyplus.halo.Plan
 import dev.infyplus.halo.Summary
 import dev.infyplus.halo.SummaryKind
 import dev.infyplus.halo.Sync
+import dev.infyplus.halo.Turn
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
@@ -154,6 +155,40 @@ class HaloConversation(
     var latestPlan by mutableStateOf<Plan?>(null)
         private set
 
+    /**
+     * What was said, in order — the thing that gets sent back so a follow-up has an antecedent.
+     *
+     * Derived from the transcript rather than kept alongside it, so the two cannot disagree. Route
+     * chips, cards and the typing indicator are all left out: they are how the app narrates what
+     * happened, not what anyone said.
+     */
+    private fun turns(): List<Turn> = entries.mapNotNull {
+        (it as? ThreadEntry.Said)?.let { said ->
+            Turn(role = if (said.fromUser) "user" else "assistant", text = said.text)
+        }
+    }
+
+    /** Put the last conversation back, so closing the panel is not the same as ending it. */
+    fun restore() {
+        val stored = ConversationStore.load() ?: return
+        if (entries.isNotEmpty()) return
+        stored.forEach { entries.add(ThreadEntry.Said(it.text, fromUser = it.role == "user")) }
+    }
+
+    /**
+     * Start again: forget what was said, on screen and on disk.
+     *
+     * The alternative to a button is a conversation that silently accumulates until a follow-up
+     * lands against something from last Tuesday.
+     */
+    fun startNew() {
+        ConversationStore.clear()
+        scope = null
+        reference = null
+        entries.clear()
+        greet()
+    }
+
     fun greet() {
         entries.add(
             ThreadEntry.Said(
@@ -187,9 +222,13 @@ class HaloConversation(
         // try/finally, because `busy` gates the composer: anything that escapes this — including a
         // cancellation from the panel being closed mid-send — would otherwise leave the input box
         // disabled with a typing indicator above it, for the rest of the process.
+        // Captured before the new turn is added, so the server gets "what came before this" rather
+        // than the question it is being asked twice.
+        val priorTurns = turns().dropLast(1)
+
         val result = try {
             apiCatching {
-                val response = api.message(trimmed, itemId = scope?.id)
+                val response = api.message(trimmed, itemId = scope?.id, history = priorTurns)
                 buildList {
                     // Chat is the one route with nothing to report — showing "chat → nothing
                     // happened" above a greeting is noise, and the absence of a chip is already
@@ -232,6 +271,9 @@ class HaloConversation(
         result
             .onSuccess { (added, response) ->
                 entries.addAll(added)
+                // Written after the reply lands, not on send: a turn that failed is not part of
+                // the conversation, and storing it would have the model answering a ghost.
+                ConversationStore.save(turns())
                 state.markOffline(false)
                 // A new or moved reminder changes what this device should be waking up for, so
                 // re-arm now rather than waiting for the next sync tick — otherwise "remind me

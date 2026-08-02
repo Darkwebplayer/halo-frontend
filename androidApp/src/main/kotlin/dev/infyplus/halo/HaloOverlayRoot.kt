@@ -7,6 +7,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -23,6 +25,8 @@ import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.platform.LocalConfiguration
+import dev.infyplus.halo.ui.HaloConversation
 import dev.infyplus.halo.ui.HaloPanel
 import dev.infyplus.halo.ui.HaloState
 import dev.infyplus.halo.ui.Orb
@@ -58,6 +62,11 @@ fun HaloOverlayRoot(
     state: HaloState = HaloState.shared,
     timer: Pomodoro = Pomodoro.shared,
 ) {
+    // Owned here rather than inside the panel, which is what the desktop host already does. The
+    // panel leaves composition every time the overlay collapses — which is every tap outside it —
+    // and a conversation created in there went with it, so there was never anything to come back
+    // to. Held across collapse, and persisted by the conversation itself.
+    val conversation = remember(api) { HaloConversation(api, state) }
     var countdown by remember { mutableStateOf(timer.display()) }
     // Hoisted: both the expanded panel (to launch the app) and the collapsed orb (for the touch
     // slop) need it, and this is a service-hosted ComposeView, so it is the service's context.
@@ -111,6 +120,11 @@ fun HaloOverlayRoot(
         // Back closes the panel rather than being swallowed by a focusable overlay.
         BackHandler { onExpanded(false) }
 
+        // A ceiling, not a target: the panel wraps its content, and this is where it stops. It has
+        // to exist — the thread and the alert list are lazy lists, and a lazy list measured with
+        // an unbounded height throws rather than growing.
+        val maxPanel = (LocalConfiguration.current.screenHeightDp * 0.7f).dp
+
         Box(
             Modifier
                 .fillMaxSize()
@@ -123,8 +137,17 @@ fun HaloOverlayRoot(
             HaloPanel(
                 api = api,
                 state = state,
+                conversation = conversation,
+                // Sized to its content rather than to the screen. The window and the scrim above
+                // stay full-screen — they are what makes tap-outside work — but the part being
+                // read and typed into is only as tall as it needs to be, and grows as the
+                // conversation does. Bottom-aligned so it grows upward, away from the composer,
+                // which stays where the thumb already is.
+                growWithContent = true,
                 modifier = Modifier
-                    .fillMaxSize()
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .heightIn(min = 280.dp, max = maxPanel)
                     .padding(start = 10.dp, end = 10.dp, top = 72.dp, bottom = 14.dp),
                 onClose = { onExpanded(false) },
                 onOpenApp = {

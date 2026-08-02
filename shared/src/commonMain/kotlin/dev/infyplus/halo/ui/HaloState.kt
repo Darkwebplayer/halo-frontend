@@ -121,12 +121,38 @@ class HaloState(
     var headsUp by mutableStateOf<dev.infyplus.halo.Scheduled?>(null)
         private set
 
+    /**
+     * Notifications that fired while another was still showing.
+     *
+     * There used to be only the single slot above, so a second alert arriving while the first was
+     * up replaced it silently — the first was never seen, never acted on, and left no trace except
+     * a number on the tray icon. Now they queue and are shown one at a time.
+     *
+     * Bounded, because this is a courtesy rather than a record: everything that fired is already
+     * on the server and listed in the Alerts tab. Twenty is far past the point where anyone is
+     * still reading banners.
+     */
+    private val waiting = ArrayDeque<dev.infyplus.halo.Scheduled>()
+
+    /** How many are still queued behind the one on screen. */
+    var headsUpWaiting by mutableStateOf(0)
+        private set
+
     fun showHeadsUp(notification: dev.infyplus.halo.Scheduled) {
-        headsUp = notification
+        if (headsUp == null) {
+            headsUp = notification
+            return
+        }
+        // Same notification re-reported (a re-arm, a duplicate fire) must not stack up.
+        if (headsUp?.id == notification.id || waiting.any { it.id == notification.id }) return
+        if (waiting.size < 20) waiting.addLast(notification)
+        headsUpWaiting = waiting.size
     }
 
+    /** Dismiss the one on screen and show whatever was behind it. */
     fun dismissHeadsUp() {
-        headsUp = null
+        headsUp = waiting.removeFirstOrNull()
+        headsUpWaiting = waiting.size
     }
 
     /**

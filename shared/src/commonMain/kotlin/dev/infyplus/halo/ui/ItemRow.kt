@@ -89,6 +89,19 @@ fun ItemRow(
             Mono(meta.joinToString("  ·  "), color = HaloPalette.navy.copy(alpha = 0.8f))
         }
 
+        // Shown under the meta line rather than beside the title: it is context you read when you
+        // are already looking at this row, not something to scan a list by.
+        item.notes?.takeIf { it.isNotBlank() }?.let {
+            Text(
+                it,
+                Modifier.padding(top = 2.dp),
+                fontSize = 12.sp,
+                color = HaloPalette.navy.copy(alpha = 0.85f),
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
         if (item.tagList.isNotEmpty()) {
             Row(
                 Modifier.padding(top = 2.dp),

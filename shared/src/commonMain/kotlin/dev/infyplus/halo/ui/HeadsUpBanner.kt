@@ -72,12 +72,18 @@ fun HeadsUpBanner(
     notification: Scheduled?,
     modifier: Modifier = Modifier,
     reducedMotion: Boolean = false,
+    /** How many more are queued behind this one, so the user knows to expect them. */
+    waiting: Int = 0,
     onOpen: (Scheduled) -> Unit = {},
     onAct: (Scheduled, String) -> Unit = { _, _ -> },
     onDismiss: () -> Unit = {},
 ) {
+    // Withdraws on its own only when there is nothing to decide. A banner offering Done or Snooze
+    // is a question, and a question that erases itself after six seconds is one the user is not
+    // actually being asked — step away from the desk and it has been asked and answered without
+    // them. Those wait to be acted on or dismissed.
     LaunchedEffect(notification) {
-        if (notification != null) {
+        if (notification != null && notification.actions.isEmpty()) {
             delay(HEADS_UP_MS)
             onDismiss()
         }
@@ -176,6 +182,15 @@ fun HeadsUpBanner(
                         }
                     }
                 }
+            }
+
+            // Said out loud so a burst does not look like one alert that keeps changing its mind.
+            if (waiting > 0) {
+                Mono(
+                    if (waiting == 1) "1 MORE WAITING" else "$waiting MORE WAITING",
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                    color = HaloPalette.navy.copy(alpha = 0.7f),
+                )
             }
         }
     }

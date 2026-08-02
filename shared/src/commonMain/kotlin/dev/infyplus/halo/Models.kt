@@ -21,6 +21,14 @@ data class Item(
     /** Comma-FRAMED on the server (`,work,urgent,`) so a LIKE can match whole tokens. See [tagList]. */
     val tags: String? = null,
     @SerialName("recurrence_id") val recurrenceId: String? = null,
+    /**
+     * Whatever the title had no room for, in the user's own words.
+     *
+     * The title is a short imperative because it is what a notification shows; the detail behind
+     * it lives here. The server puts it in the model's prompt too, so the assistant can answer
+     * from it rather than asking again.
+     */
+    val notes: String? = null,
 ) {
     /** The tags as words. The framing commas are storage detail and never belong on screen. */
     val tagList: List<String> get() = tags.orEmpty().split(",").mapNotNull { it.trim().ifEmpty { null } }
@@ -109,6 +117,14 @@ data class Postponed(val id: String, val title: String, val times: Int = 0)
  */
 @Serializable
 data class Summary(
+    /**
+     * The day in a few sentences, written for this user in their chosen voice.
+     *
+     * The server writes it once per summary occurrence and caches it, so asking twice — or from a
+     * second device — costs nothing. Empty when it could not be written, which the card treats as
+     * "show the counts instead" rather than as an error.
+     */
+    val description: String = "",
     val date: String = "",
     @SerialName("as_of") val asOf: String = "",
     val today: List<Item> = emptyList(),
@@ -241,11 +257,23 @@ data class CommandRequest(val text: String)
  * [itemId] is what makes a pronoun resolvable: "push it to 6pm" has no subject, so without it the
  * server has to guess which item was meant — and it guesses wrong.
  */
+/** One earlier turn, as it is sent back to the server and stored on disk. */
+@Serializable
+data class Turn(val role: String, val text: String)
+
 @Serializable
 data class MessageRequest(
     val text: String,
     @SerialName("item_id") val itemId: String? = null,
     val tz: String,
+    /**
+     * What was said before this, oldest first.
+     *
+     * Words only — no record of which tools ran. Tool results carry relative times ("tomorrow at
+     * 09:00") that would be false if replayed a day later, and the server re-reads the real list
+     * on every message regardless, so carrying them would add staleness and no information.
+     */
+    val history: List<Turn> = emptyList(),
 )
 
 /**

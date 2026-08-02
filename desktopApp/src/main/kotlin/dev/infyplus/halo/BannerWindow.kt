@@ -57,6 +57,7 @@ fun BannerWindow(
             notification = notification,
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             reducedMotion = prefersReducedMotion(),
+            waiting = state.headsUpWaiting,
             onOpen = {
                 state.dismissHeadsUp()
                 state.requestScope(it.itemId)
