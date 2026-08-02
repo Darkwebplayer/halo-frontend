@@ -26,7 +26,7 @@ import java.io.File
 import kotlin.test.Test
 
 /**
- * Renders the cat to PNGs so the drawing can actually be *looked at*.
+ * Renders the avatars to PNGs so the drawings can actually be *looked at*.
  *
  * The unit tests pin every number in the expression sheet, but no assertion will tell you the
  * ears are upside down or the pupils sit outside the head. This writes frames to
@@ -65,36 +65,39 @@ class RenderSheet {
 
     @Test
     fun rendersEveryExpression() {
-        for (expression in Expression.entries) {
-            write(expression.name.lowercase(), 520, 520) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CatFace(expression, Modifier.size(CatGeometry.CANVAS_DP * 2))
+        for ((id, _) in AVATARS) {
+            for (expression in Expression.entries) {
+                write("$id-${expression.name.lowercase()}", 520, 520) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        AvatarFace(expression, Modifier.size(CatGeometry.CANVAS_DP * 2), avatar = id)
+                    }
                 }
             }
-        }
 
-        // One contact sheet, so all eight can be compared side by side in a single look.
-        //
-        // Sized to fit 4 x 2 cats at their natural size, because Row hands out its width in
-        // order: too narrow and the first children take their full size while the rest are
-        // clamped to whatever is left, which is nothing.
-        val cell = (CatGeometry.CANVAS_DP.value * DENSITY).toInt()
-        write("_sheet", cell * 4 + 32, cell * 2 + 32) {
-            Column(
-                Modifier.fillMaxSize().padding(8.dp),
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Expression.entries.chunked(4).forEach { row ->
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center,
-                    ) {
-                        row.forEach { CatFace(it, Modifier.size(CatGeometry.CANVAS_DP)) }
+            // One contact sheet per face, so all eight can be compared side by side in a single
+            // look — and against the reference art, which is laid out the same way.
+            //
+            // Sized to fit 4 x 2 at their natural size, because Row hands out its width in order:
+            // too narrow and the first children take their full size while the rest are clamped to
+            // whatever is left, which is nothing.
+            val cell = (CatGeometry.CANVAS_DP.value * DENSITY).toInt()
+            write("_sheet-$id", cell * 4 + 32, cell * 2 + 32) {
+                Column(
+                    Modifier.fillMaxSize().padding(8.dp),
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Expression.entries.chunked(4).forEach { row ->
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            row.forEach { AvatarFace(it, Modifier.size(CatGeometry.CANVAS_DP), avatar = id) }
+                        }
                     }
                 }
             }
         }
-        println("wrote ${Expression.entries.size + 1} frames to ${out.absolutePath}")
+        println("wrote ${(Expression.entries.size + 1) * AVATARS.size} frames to ${out.absolutePath}")
     }
 
     @Test
@@ -117,7 +120,7 @@ class RenderSheet {
             write("dial-${(progress * 100).toInt()}", 260, 260) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     ProgressDial(progress, Modifier.size(CatGeometry.ORB_DP), late = late)
-                    CatFace(Expression.Work, Modifier.size(CatGeometry.CANVAS_DP))
+                    AvatarFace(Expression.Work, Modifier.size(CatGeometry.CANVAS_DP))
                 }
             }
         }

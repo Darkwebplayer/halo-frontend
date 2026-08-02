@@ -115,9 +115,9 @@ fun HeadsUpBanner(
                     .padding(14.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                // The same cat, drawn small. CatFace scales off its layout size, so this is the
-                // identical drawing rather than a second asset that could drift.
-                CatFace(Expression.Happy, Modifier.size(46.dp))
+                // The same face as the orb, drawn small. It scales off its layout size, so this is
+                // the identical drawing rather than a second asset that could drift.
+                AvatarFace(Expression.Happy, Modifier.size(46.dp))
 
                 Column(Modifier.weight(1f)) {
                     Row(

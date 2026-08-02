@@ -54,6 +54,24 @@ enum class Expression {
 }
 
 /**
+ * Garfield's own coat.
+ *
+ * Not in [HaloPalette] and not `HaloPalette.body`, which it used to be: that entry is also the
+ * app's Material `secondary` and the wash behind every tonal surface, so recolouring the cat
+ * through it would have repainted half the settings screen orange.
+ */
+object CatPalette {
+    /** Marmalade. */
+    val body = Color(0xFFE9974A)
+
+    /** A step darker, for the backs of the ears. */
+    val shade = Color(0xFFCE7A2E)
+
+    /** The inner ear, and the cheeks — a dusty pink that survives being printed on orange. */
+    val blush = Color(0xFFE0736A)
+}
+
+/**
  * One mouth, as a single quadratic.
  *
  * Five of the reference's six mouths (lines 718-723) share this topology, so they morph into one
@@ -130,9 +148,9 @@ data class CatPose(
 
     // ── skin ─────────────────────────────────────────────────────────────────
     val blushAlpha: Float = 0.7f,
-    val bodyColor: Color = HaloPalette.body,
-    val earOutColor: Color = HaloPalette.shade,
-    val earInColor: Color = HaloPalette.blush,
+    val bodyColor: Color = CatPalette.body,
+    val earOutColor: Color = CatPalette.shade,
+    val earInColor: Color = CatPalette.blush,
 
     // ── the whole character (origin 50,92) ───────────────────────────────────
     val bodyTy: Float = 0f,

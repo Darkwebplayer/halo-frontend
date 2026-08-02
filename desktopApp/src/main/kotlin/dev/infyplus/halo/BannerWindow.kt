@@ -72,7 +72,7 @@ fun BannerWindow(
                             Notifications.dismissFor(itemId)
                             // Acting closes every open check-in for that item server-side, so the
                             // count drops by the item rather than by the occurrence.
-                            state.setUnread((state.unread - 1).coerceAtLeast(0))
+                            state.noteUnread((state.unread - 1).coerceAtLeast(0))
                             state.flash(
                                 if (verb == "done") Expression.Happy else Expression.Wink,
                                 1600,

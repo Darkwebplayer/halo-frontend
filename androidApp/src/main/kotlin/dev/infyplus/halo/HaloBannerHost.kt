@@ -44,7 +44,7 @@ fun HaloBannerHost(
                         Notifications.dismissFor(itemId)
                         // Acting answers every open check-in for that item server-side, so the
                         // local count drops by the item, not by the occurrence.
-                        state.setUnread((state.unread - 1).coerceAtLeast(0))
+                        state.noteUnread((state.unread - 1).coerceAtLeast(0))
                         state.flash(
                             if (verb == "done") dev.infyplus.halo.ui.Expression.Happy
                             else dev.infyplus.halo.ui.Expression.Wink,

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.TimePicker
@@ -27,6 +28,9 @@ import androidx.compose.ui.unit.sp
 import dev.infyplus.halo.ui.HaloButton
 import dev.infyplus.halo.ui.HaloCard
 import dev.infyplus.halo.ui.HaloChip
+import dev.infyplus.halo.ui.AVATARS
+import dev.infyplus.halo.ui.AvatarFace
+import dev.infyplus.halo.ui.Expression
 import dev.infyplus.halo.ui.HaloField
 import dev.infyplus.halo.ui.HaloPalette
 import dev.infyplus.halo.ui.HaloShapes
@@ -41,9 +45,6 @@ import kotlinx.coroutines.launch
  * times decide what the backend schedules, and the personality colours text the backend writes.
  * Keeping them here means a second device sees the same Halo rather than a differently-behaved one.
  */
-
-/** The faces we can actually draw. One for now; the picker is the seam the rest arrive through. */
-private val AVATARS = listOf(DEFAULT_AVATAR to "Blue cat")
 
 /** 'HH:MM' as the picker's two numbers, tolerating anything odd by falling back to [fallback]. */
 private fun hhmm(value: String, fallback: Pair<Int, Int>): Pair<Int, Int> {
@@ -172,9 +173,16 @@ fun ProfileCard(modifier: Modifier = Modifier) {
         Row(
             Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             AVATARS.forEach { (id, label) ->
-                HaloChip(if (id == avatar) "● $label" else label) { avatar = id }
+                // The face above its name — a chip reading "Halo" says nothing about what you are
+                // about to put on your screen. Stacked rather than side by side because a row of
+                // face-and-chip pairs runs out of card long before the list runs out of faces.
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    AvatarFace(Expression.Idle, Modifier.size(52.dp), avatar = id)
+                    HaloChip(if (id == avatar) "● $label" else label) { avatar = id }
+                }
             }
         }
 

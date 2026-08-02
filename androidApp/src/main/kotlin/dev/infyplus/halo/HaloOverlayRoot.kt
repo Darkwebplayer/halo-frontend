@@ -41,6 +41,14 @@ import kotlin.math.abs
 /** 25 minutes as milliseconds — what the dial measures progress against. */
 
 /**
+ * How big the bubble is on a phone, against the design's own 92dp.
+ *
+ * Smaller than on desktop on purpose: this floats over whatever the user is actually using, and a
+ * full-size orb covers too much of it. [OverlayService]'s collapsed window is sized to match.
+ */
+private const val ORB_SCALE = 0.75f
+
+/**
  * Everything the floating overlay draws, on both of its window shapes.
  *
  * The window itself is [OverlayService]'s problem; this decides what goes in it and reports back
@@ -73,7 +81,7 @@ fun HaloOverlayRoot(
     val context = LocalContext.current
 
     LaunchedEffect(timer.state) {
-        state.setTimerRunning(timer.isRunning)
+        state.noteTimerRunning(timer.isRunning)
         timer.catchUp()
         countdown = timer.display()
         while (timer.isRunning) {
@@ -98,7 +106,7 @@ fun HaloOverlayRoot(
             } else {
                 apiCatching { api.checkins() }
                     .onSuccess {
-                        state.setUnread(it.attentionCount(), timerRunning = timer.isRunning)
+                        state.noteUnread(it.attentionCount())
                         state.markOffline(false)
                     }
                     .onFailure { state.markOffline(it.isConnectivity()) }
@@ -176,6 +184,7 @@ fun HaloOverlayRoot(
                     late = timer.phase == Phase.Focus && isLate(timer.remainingMs(), timer.totalMs()),
                     unread = state.unread,
                     reducedMotion = prefersReducedMotion(),
+                    scale = ORB_SCALE,
                 )
             }
         }
@@ -250,6 +259,7 @@ fun HaloOverlayRoot(
                 state.requestTab(dev.infyplus.halo.ui.PanelTab.Notifications)
                 onExpanded(true)
             },
+            scale = ORB_SCALE,
         )
     }
 }

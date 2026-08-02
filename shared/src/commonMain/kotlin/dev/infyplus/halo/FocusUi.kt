@@ -26,7 +26,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Text
-import dev.infyplus.halo.ui.CatFace
+import dev.infyplus.halo.ui.AvatarFace
 import dev.infyplus.halo.ui.Expression
 import dev.infyplus.halo.ui.HaloButton
 import dev.infyplus.halo.ui.HaloCard
@@ -178,7 +178,7 @@ fun FocusScreen(
                 late = timer.dialIsLate(),
             )
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                CatFace(
+                AvatarFace(
                     if (timer.isRunning && timer.phase == Phase.Focus) Expression.Work else Expression.Idle,
                     Modifier.size(78.dp),
                 )

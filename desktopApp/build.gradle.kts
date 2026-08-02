@@ -46,7 +46,14 @@ compose.desktop {
             description = "A floating assistant that captures what you say and reminds you later."
             vendor = "Infyplus"
 
+            // jpackage takes one format per platform and silently ignores the wrong one, so the
+            // same artwork ships three times: icons/ holds the exports, not the source.
+            windows { iconFile.set(project.file("icons/halo.ico")) }
+            linux { iconFile.set(project.file("icons/halo.png")) }
+
             macOS {
+                iconFile.set(project.file("icons/halo.icns"))
+
                 // Kept as the reverse-DNS identifier now that packageName is the display name.
                 // Also what `zap trash:` in the Homebrew cask targets.
                 bundleID = "dev.infyplus.halo"

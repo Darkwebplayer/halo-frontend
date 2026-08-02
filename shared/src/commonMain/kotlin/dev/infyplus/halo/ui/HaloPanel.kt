@@ -111,7 +111,7 @@ fun HaloPanel(
         apiCatching { api.checkins() }
             .onSuccess {
                 checkins = it
-                state.setUnread(it.attentionCount())
+                state.noteUnread(it.attentionCount())
                 state.markOffline(false)
                 checkinsError = null
             }
@@ -256,7 +256,7 @@ fun HaloPanel(
                                     conversation.entries.add(
                                         ThreadEntry.Said(verb.pastTense(item.title), fromUser = false),
                                     )
-                                    state.setUnread((state.unread - 1).coerceAtLeast(0))
+                                    state.noteUnread((state.unread - 1).coerceAtLeast(0))
                                     state.flash(Expression.Happy, 1600)
                                     refreshCheckins()
                                     returnToAlerts()

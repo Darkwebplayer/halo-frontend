@@ -304,8 +304,12 @@ class OverlayService : Service() {
          * the excited hop and ground shadow are not clipped, and the cloud and badge sit outside
          * it too. The window clips; the composable does not.
          */
-        private const val COMPACT_W = 150
-        private const val COMPACT_H = 160
+        // Three quarters of the design's own size: on a phone the bubble sits over whatever the
+        // user is actually doing, and at full size it was covering too much of it. Kept in step
+        // with ORB_SCALE — the window has to be the size of what is drawn in it, or the hop and
+        // the ground shadow get clipped by the window rather than by nothing.
+        private const val COMPACT_W = 114
+        private const val COMPACT_H = 120
 
         // NOT_TOUCH_MODAL lets touches outside this window reach whatever is behind it; without
         // it a small overlay still blocks the whole screen. SPLIT_TOUCH keeps multi-touch sane

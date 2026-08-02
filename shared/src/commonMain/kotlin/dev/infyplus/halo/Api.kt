@@ -174,11 +174,17 @@ class HaloApi(
         res.body<RecurrencesResponse>().recurrences
     }
 
-    /** The user's settings, with the server's own defaults already folded in. */
+    /**
+     * The user's settings, with the server's own defaults already folded in.
+     *
+     * Both this and [saveProfile] cache the avatar on the way past. Doing it here rather than at
+     * each screen is the point: three places fetch the profile, and one of them forgetting to
+     * sync would leave the orb wearing yesterday's face until something else happened to load.
+     */
     suspend fun profile(): Profile = call {
         val res = client.get("$baseUrl/profile") { header("authorization", "Bearer $authToken") }
         if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
-        res.body()
+        res.body<Profile>().also { Config.rememberAvatar(it.avatar) }
     }
 
     /**
@@ -195,7 +201,7 @@ class HaloApi(
             setBody(patch)
         }
         if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
-        res.body()
+        res.body<Profile>().also { Config.rememberAvatar(it.avatar) }
     }
 
     /** Today's plan: carried-over work plus today's. */

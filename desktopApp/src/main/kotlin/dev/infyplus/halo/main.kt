@@ -166,7 +166,7 @@ private fun ApplicationScope.Halo() {
             } else {
                 apiCatching { api.checkins() }
                     .onSuccess { list ->
-                        halo.setUnread(list.attentionCount(), timerRunning = timer.isRunning)
+                        halo.noteUnread(list.attentionCount())
                         halo.markOffline(false)
                     }
                     .onFailure { halo.markOffline(it.isConnectivity()) }
@@ -176,7 +176,7 @@ private fun ApplicationScope.Halo() {
     }
 
     // The expression follows the timer whenever nothing is waiting on an answer.
-    LaunchedEffect(timer.state) { halo.setTimerRunning(timer.isRunning) }
+    LaunchedEffect(timer.state) { halo.noteTimerRunning(timer.isRunning) }
 
     // Receding while the panel is open would be wrong — you are looking straight at it. Closing
     // restarts the idle countdown rather than leaving it stuck bright.

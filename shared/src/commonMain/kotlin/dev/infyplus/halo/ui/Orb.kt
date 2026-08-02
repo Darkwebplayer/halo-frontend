@@ -69,6 +69,15 @@ fun Orb(
     resting: Boolean = false,
     reducedMotion: Boolean = false,
     /**
+     * How big the character and its dial are, against the design's own 92dp.
+     *
+     * A single multiplier rather than a size, because the face and the ring live in different
+     * coordinate spaces (see [CatGeometry]) and have to shrink by the same amount or the ring
+     * stops fitting the head. The badge and the speech cloud are deliberately left alone: they are
+     * text, and text that scales with the ornament stops being readable.
+     */
+    scale: Float = 1f,
+    /**
      * The one gesture this composable does attach, and only to the badge.
      *
      * The badge is a distinct target with a distinct meaning — "show me the things waiting" —
@@ -95,17 +104,17 @@ fun Orb(
         if (dialAlpha > 0f) {
             ProgressDial(
                 progress = progress,
-                modifier = Modifier.size(CatGeometry.ORB_DP).alpha(dialAlpha),
+                modifier = Modifier.size(CatGeometry.ORB_DP * scale).alpha(dialAlpha),
                 late = late,
                 reducedMotion = reducedMotion,
             )
         }
 
-        CatFace(
+        AvatarFace(
             expression = expression,
             // Fills the whole box: the canvas is deliberately larger than the orb so the
             // excited hop and the ground shadow have somewhere to go without clipping.
-            modifier = Modifier.size(CatGeometry.CANVAS_DP),
+            modifier = Modifier.size(CatGeometry.CANVAS_DP * scale),
             reducedMotion = reducedMotion,
         )
 

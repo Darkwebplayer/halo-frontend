@@ -351,7 +351,7 @@ data class ProfilePatch(
 )
 
 /** The face drawn when the user has never chosen one. Matches the server's own default. */
-const val DEFAULT_AVATAR = "blue_cat"
+const val DEFAULT_AVATAR = "default"
 
 /** How long a personality may be, mirroring the server's cap so the field can stop at it. */
 const val PERSONALITY_MAX = 200

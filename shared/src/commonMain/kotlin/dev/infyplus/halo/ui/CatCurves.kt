@@ -31,10 +31,23 @@ object CatCurves {
 
     private fun mix(a: Float, b: Float, t: Float) = a + (b - a) * t
 
+    /**
+     * Out to the midpoint and back, eased at both ends: 0 at phase 0, 1 at .5, 0 again at 1.
+     *
+     * Written as one function rather than as two [span] calls per curve because the second of
+     * those calls has to run *backwards*, and [span] answers a backwards range with a flat zero —
+     * which held the whole second half of the cycle at rest and then snapped, the jerk that used
+     * to be visible at the end of every breath.
+     *
+     * [smooth] has zero gradient at both ends, so the value not only meets itself across the loop
+     * boundary but arrives there with no velocity — which is what makes the seam invisible.
+     */
+    private fun outAndBack(phase: Float) =
+        smooth(if (phase <= 0.5f) phase * 2f else (1f - phase) * 2f)
+
     /** Breathing, `@keyframes breathe`: scale 1 to 1.025 and a 1-unit rise at the midpoint. */
     fun breathe(phase: Float): Breath {
-        // 0% and 100% rest; 50% is the peak. Ease within each half.
-        val t = if (phase <= 0.5f) smooth(span(phase, 0f, 0.5f)) else smooth(span(phase, 1f, 0.5f))
+        val t = outAndBack(phase)
         return Breath(scale = mix(1f, 1.025f, t), ty = mix(0f, -1f, t))
     }
 
@@ -113,9 +126,9 @@ object CatCurves {
         if (phase <= 0.5f) mix(0.42f, 0.72f, smooth(span(phase, 0f, 0.5f)))
         else mix(0.72f, 0.42f, smooth(span(phase, 0.5f, 1f)))
 
-    /** Excited sparkles, `@keyframes twinkle`. */
+    /** Excited sparkles, `@keyframes twinkle`. Same out-and-back shape as the breath. */
     fun twinkle(phase: Float): Twinkle {
-        val t = if (phase <= 0.5f) smooth(span(phase, 0f, 0.5f)) else smooth(span(phase, 1f, 0.5f))
+        val t = outAndBack(phase)
         return Twinkle(alpha = mix(0.35f, 1f, t), scale = mix(0.8f, 1.15f, t))
     }
 

@@ -37,6 +37,17 @@ class HaloState(
     var unread by mutableStateOf(0)
         private set
 
+    /**
+     * Whether a focus timer is running.
+     *
+     * Remembered rather than passed in. It used to be an optional argument on [noteUnread], and the
+     * one caller that forgot it — the panel, refreshing its lists on open — silently asserted "no
+     * timer" and dropped a working cat back to Idle. It stayed there, because nothing re-derives
+     * until the timer next changes state, which a still-running timer never does.
+     */
+    var timerRunning by mutableStateOf(false)
+        private set
+
     /** Recedes when untouched, so a permanent overlay does not become permanent clutter. */
     var resting by mutableStateOf(false)
         private set
@@ -81,17 +92,27 @@ class HaloState(
         flashed = null
     }
 
-    fun setTimerRunning(running: Boolean) {
-        // Only Work and Idle trade places here; a pending notification outranks both.
-        if (unread > 0) return
-        base = if (running) Expression.Work else Expression.Idle
+    fun noteTimerRunning(running: Boolean) {
+        timerRunning = running
+        rederive()
     }
 
-    fun setUnread(count: Int, timerRunning: Boolean = false) {
+    fun noteUnread(count: Int) {
         unread = count
-        // A reminder is a bouncy hello, not a scowl (reference line 991).
+        rederive()
+    }
+
+    /**
+     * The resting face, from the facts alone.
+     *
+     * The only place [base] is ever written. Every caller states a fact and this decides what that
+     * adds up to — which is the rule the whole class is built on, and the reason a caller can no
+     * longer accidentally assert something it does not know.
+     */
+    private fun rederive() {
+        // A reminder is a bouncy hello, not a scowl (reference line 991), and it outranks work.
         base = when {
-            count > 0 -> Expression.Happy
+            unread > 0 -> Expression.Happy
             timerRunning -> Expression.Work
             else -> Expression.Idle
         }
@@ -107,9 +128,9 @@ class HaloState(
      * Only for notifications with something to act on: a summary or a general nudge has no
      * decision attached, and the badge counts decisions.
      */
-    fun noteFired(hasItem: Boolean, timerRunning: Boolean = false) {
+    fun noteFired(hasItem: Boolean) {
         wake()
-        if (hasItem) setUnread(unread + 1, timerRunning) else flash(Expression.Happy, 2600)
+        if (hasItem) noteUnread(unread + 1) else flash(Expression.Happy, 2600)
     }
 
     /**

@@ -1,20 +1,8 @@
 package dev.infyplus.halo.ui
 
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -26,15 +14,6 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.Path
-
-/**
- * The reference's shared transition, applied to every animated property at once
- * (`transition: .3s cubic-bezier(.3,1.2,.5,1)`, line 235). The slight overshoot is what gives
- * expression changes their bounce.
- */
-private val PoseEasing = CubicBezierEasing(0.3f, 1.2f, 0.5f, 1f)
-private const val POSE_MS = 300
-private const val SQUASH_MS = 180
 
 /**
  * Draws the cat.
@@ -52,93 +31,11 @@ fun CatFace(
     modifier: Modifier = Modifier,
     reducedMotion: Boolean = false,
 ) {
-    val target = poseFor(expression)
     val motion = motionFor(expression)
+    val pose = rememberMorph(poseFor(expression), expression, reducedMotion, ::lerp)
+    val phases = rememberPhases(motion, expression, reducedMotion)
 
-    // One driver for the whole pose, mirroring the CSS. Interrupting mid-flight is
-    // position-continuous because `from` captures what is currently on screen, not the previous
-    // target — otherwise a fast idle→work→idle would visibly jump backwards.
-    var from by remember { mutableStateOf(target) }
-    var shown by remember { mutableStateOf(target) }
-    val morph = remember { Animatable(1f) }
-
-    LaunchedEffect(expression, reducedMotion) {
-        from = shown
-        if (reducedMotion) {
-            morph.snapTo(1f)
-        } else {
-            morph.snapTo(0f)
-            morph.animateTo(1f, tween(POSE_MS, easing = PoseEasing))
-        }
-    }
-
-    // Every state change squashes on the way in (line 343).
-    val squash = remember { Animatable(1f) }
-    LaunchedEffect(expression, reducedMotion) {
-        if (!reducedMotion) {
-            squash.snapTo(0f)
-            squash.animateTo(1f, tween(SQUASH_MS, easing = LinearEasing))
-        }
-    }
-
-    val pose = lerp(from, target, morph.value).also { shown = it }
-
-    // One infinite transition for every loop. Each `animateFloat` yields a normalised *phase*,
-    // never a value — the shaping happens in CatCurves, so a single clock can drive several
-    // channels at once (the hop moves the body on three axes and they must stay in step).
-    val loops = rememberInfiniteTransition(label = "cat-loops")
-
-    @Composable
-    fun phase(periodMs: Int?, label: String): Float =
-        if (periodMs == null || reducedMotion) 0f else loops.animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(periodMs, easing = LinearEasing),
-                repeatMode = RepeatMode.Restart,
-            ),
-            label = label,
-        ).value
-
-    val breathePhase = phase(motion.breatheMs, "breathe")
-    val blinkPhase = phase(motion.blinkMs, "blink")
-    val driftPhase = phase(motion.driftMs, "drift")
-    val lazyPhase = phase(motion.lazyMs, "lazy")
-    val wobblePhase = phase(motion.wobbleMs, "wobble")
-    val hopPhase = phase(motion.hopMs, "hop")
-    val puffPhase = phase(motion.puffMs, "puff")
-    val gleamPhase = phase(motion.gleamMs, "gleam")
-    val twinklePhase = phase(motion.twinkleMs, "twinkle")
-
-    // Shake is finite — three repeats then still (line 312), so it cannot ride the infinite clock.
-    val shake = remember { Animatable(0f) }
-    LaunchedEffect(expression, reducedMotion) {
-        shake.snapTo(0f)
-        val ms = motion.shakeMs
-        val repeats = motion.shakeRepeats
-        if (!reducedMotion && ms != null && repeats != null) {
-            repeat(repeats) { shake.animateTo(1f, tween(ms, easing = LinearEasing)); shake.snapTo(0f) }
-        }
-    }
-
-    val frame = remember(pose, breathePhase, blinkPhase, driftPhase, lazyPhase, wobblePhase,
-        hopPhase, puffPhase, gleamPhase, twinklePhase, shake.value, squash.value, motion) {
-        resolve(
-            pose = pose,
-            motion = motion,
-            breathePhase = breathePhase,
-            blinkPhase = blinkPhase,
-            driftPhase = driftPhase,
-            lazyPhase = lazyPhase,
-            wobblePhase = wobblePhase,
-            hopPhase = hopPhase,
-            puffPhase = puffPhase,
-            gleamPhase = gleamPhase,
-            twinklePhase = twinklePhase,
-            shakeProgress = shake.value,
-            squashProgress = squash.value,
-        )
-    }
+    val frame = remember(pose, phases, motion) { resolve(pose, motion, phases) }
 
     Canvas(modifier) { drawCat(frame) }
 }
@@ -146,11 +43,7 @@ fun CatFace(
 /** A pose with every active loop's contribution already folded in — what actually gets drawn. */
 private data class CatFrame(
     val pose: CatPose,
-    val bodyTx: Float,
-    val bodyTy: Float,
-    val bodyScaleX: Float,
-    val bodyScaleY: Float,
-    val bodyRotation: Float,
+    val body: BodyMotion,
     val eyeScaleY: Float,
     val pupilTx: Float,
     val glowAlpha: Float,
@@ -161,61 +54,20 @@ private data class CatFrame(
     val steamScale: Float,
 )
 
-private fun resolve(
-    pose: CatPose,
-    motion: CatMotion,
-    breathePhase: Float,
-    blinkPhase: Float,
-    driftPhase: Float,
-    lazyPhase: Float,
-    wobblePhase: Float,
-    hopPhase: Float,
-    puffPhase: Float,
-    gleamPhase: Float,
-    twinklePhase: Float,
-    shakeProgress: Float,
-    squashProgress: Float,
-): CatFrame {
-    var tx = 0f
-    var ty = pose.bodyTy
-    var sx = 1f
-    var sy = 1f
-    var rotation = pose.bodyRotation
-
-    if (motion.breatheMs != null) {
-        val b = CatCurves.breathe(breathePhase)
-        sx *= b.scale; sy *= b.scale; ty += b.ty
-    }
-    if (motion.hopMs != null) {
-        val h = CatCurves.hop(hopPhase)
-        ty += h.ty; sx *= h.sx; sy *= h.sy
-    }
-    if (motion.wobbleMs != null) rotation += CatCurves.wobbleRotation(wobblePhase)
-    if (motion.shakeMs != null) tx += CatCurves.shakeTx(shakeProgress)
-
-    // The squash rides on top of everything, so it reads on any expression.
-    if (squashProgress < 1f) {
-        val s = CatCurves.squash(squashProgress)
-        sx *= s.sx; sy *= s.sy
-    }
-
-    val puff = if (motion.puffMs != null) CatCurves.puff(puffPhase) else null
-    val twinkle = if (motion.twinkleMs != null) CatCurves.twinkle(twinklePhase) else null
+private fun resolve(pose: CatPose, motion: CatMotion, phases: Phases): CatFrame {
+    val puff = if (motion.puffMs != null) CatCurves.puff(phases.puff) else null
+    val twinkle = if (motion.twinkleMs != null) CatCurves.twinkle(phases.twinkle) else null
 
     return CatFrame(
         pose = pose,
-        bodyTx = tx,
-        bodyTy = ty,
-        bodyScaleX = sx,
-        bodyScaleY = sy,
-        bodyRotation = rotation,
+        body = phases.body(motion, pose.bodyTy, pose.bodyRotation),
         // The blink multiplies the pose's eye height rather than replacing it, so a waiting cat
         // blinks from its already-heavy lids instead of snapping wide open first.
-        eyeScaleY = pose.eyeScaleY * if (motion.blinkMs != null) CatCurves.blinkScaleY(blinkPhase) else 1f,
+        eyeScaleY = pose.eyeScaleY * if (motion.blinkMs != null) CatCurves.blinkScaleY(phases.blink) else 1f,
         pupilTx = pose.pupilTx +
-            (if (motion.driftMs != null) CatCurves.driftTx(driftPhase) else 0f) +
-            (if (motion.lazyMs != null) CatCurves.lazyTx(lazyPhase) else 0f),
-        glowAlpha = if (motion.gleamMs != null) CatCurves.gleamAlpha(gleamPhase) else pose.glowAlpha,
+            (if (motion.driftMs != null) CatCurves.driftTx(phases.drift) else 0f) +
+            (if (motion.lazyMs != null) CatCurves.lazyTx(phases.lazy) else 0f),
+        glowAlpha = if (motion.gleamMs != null) CatCurves.gleamAlpha(phases.gleam) else pose.glowAlpha,
         sparkleAlpha = pose.sparkleAlpha * (twinkle?.alpha ?: 1f),
         sparkleScale = twinkle?.scale ?: 1f,
         steamAlpha = pose.steamAlpha * (puff?.alpha ?: 1f),
@@ -242,10 +94,10 @@ private fun DrawScope.drawCat(frame: CatFrame) {
     }) {
         // The whole-character transform, about origin (50,92).
         withTransform({
-            translate(frame.bodyTx, frame.bodyTy)
+            translate(frame.body.tx, frame.body.ty)
             translate(g.BODY_ORIGIN.x, g.BODY_ORIGIN.y)
-            rotate(frame.bodyRotation, Offset.Zero)
-            scale(frame.bodyScaleX, frame.bodyScaleY, pivot = Offset.Zero)
+            rotate(frame.body.rotation, Offset.Zero)
+            scale(frame.body.sx, frame.body.sy, pivot = Offset.Zero)
             translate(-g.BODY_ORIGIN.x, -g.BODY_ORIGIN.y)
         }) {
             drawGroundShadow()
@@ -334,8 +186,8 @@ private fun DrawScope.drawBrows(pose: CatPose) {
 private fun DrawScope.drawBlush(pose: CatPose) {
     if (pose.blushAlpha <= 0f) return
     val g = CatGeometry
-    drawCircle(HaloPalette.blush, g.BLUSH_RADIUS, g.BLUSH_L, alpha = pose.blushAlpha)
-    drawCircle(HaloPalette.blush, g.BLUSH_RADIUS, g.BLUSH_R, alpha = pose.blushAlpha)
+    drawCircle(CatPalette.blush, g.BLUSH_RADIUS, g.BLUSH_L, alpha = pose.blushAlpha)
+    drawCircle(CatPalette.blush, g.BLUSH_RADIUS, g.BLUSH_R, alpha = pose.blushAlpha)
 }
 
 private fun DrawScope.drawEyes(frame: CatFrame) {
