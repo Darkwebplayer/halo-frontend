@@ -261,6 +261,23 @@ fun HaloPanel(
         val middle = if (growWithContent) {
             Modifier
                 .fillMaxWidth()
+                // Weighted, so it is measured *after* the composer rather than before it.
+                //
+                // A Column measures its unweighted children first, in order, each taking what it
+                // asks for — so a tall high-water mark here claimed its minimum and the composer,
+                // last in the column, was left with whatever remained. That is invisible until the
+                // panel's ceiling drops, which is exactly what the keyboard opening does: with a
+                // long conversation the input box would shrink, and shrink further the more had
+                // been said. Weighted children are measured last, from what is left over, so the
+                // composer now takes its natural height first and this absorbs the rest.
+                //
+                // `fill = false` is what keeps the panel sized to its content: a filling weight
+                // would take the whole allowance every time and pin the panel open at full height.
+                //
+                // The minimum below still applies, and still yields — Constraints.constrain clamps
+                // a minimum down to the space actually on offer, so a cramped panel costs this
+                // height rather than the composer's.
+                .weight(1f, fill = false)
                 .heightIn(min = maxOf(120.dp, tallest), max = 520.dp)
                 .onSizeChanged { with(density) { tallest = maxOf(tallest, it.height.toDp()) } }
         } else {
