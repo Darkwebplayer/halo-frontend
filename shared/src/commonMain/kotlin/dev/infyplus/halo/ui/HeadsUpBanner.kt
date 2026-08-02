@@ -32,6 +32,21 @@ import androidx.compose.ui.unit.sp
 import dev.infyplus.halo.Scheduled
 import kotlinx.coroutines.delay
 
+/**
+ * What a notification is, in words rather than the scheduler's own vocabulary.
+ *
+ * `due`, `checkin` and `nudge` are internal kinds; printed verbatim they read as jargon on the
+ * one surface with the least room to explain itself.
+ */
+private fun bannerKind(kind: String) = when (kind) {
+    "due" -> "REMINDER"
+    "checkin" -> "CHECKING IN"
+    "nudge" -> "A NUDGE"
+    "summary" -> "SUMMARY"
+    "pomodoro" -> "FOCUS"
+    else -> kind.uppercase()
+}
+
 private val BannerShape = HaloShapes.Banner
 private val DropIn = CubicBezierEasing(0.2f, 0.9f, 0.25f, 1f)
 
@@ -103,8 +118,16 @@ fun HeadsUpBanner(
                         Modifier.fillMaxWidth().padding(bottom = 4.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Mono("HALO · ${shown.kind.uppercase()}")
-                        Mono("NOW")
+                        Mono("HALO · ${bannerKind(shown.kind)}")
+                        // Was hardcoded "NOW", which was a lie for exactly the notifications that
+                        // most needed the truth: `late` means this came due while the device was
+                        // asleep, so it may be hours old. The server keeps `at` at the time it
+                        // should have fired precisely so the history stays honest.
+                        Mono(
+                            if (shown.late) "WAS DUE ${timeLabel(shown.at)?.uppercase() ?: "EARLIER"}"
+                            else timeLabel(shown.at)?.uppercase() ?: "NOW",
+                            color = if (shown.late) HaloPalette.warm else HaloPalette.navy.copy(alpha = 0.78f),
+                        )
                     }
                     Text(
                         text = shown.title,

@@ -2,6 +2,8 @@ package dev.infyplus.halo
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 @Serializable
 data class Item(
@@ -12,7 +14,55 @@ data class Item(
     val priority: Int = 2,
     @SerialName("done_at") val doneAt: String? = null,
     @SerialName("created_at") val createdAt: String,
+    // The three below have always been on the wire — every item endpoint does SELECT * — but were
+    // absent here, so `ignoreUnknownKeys` dropped them on the floor and the app could not show a
+    // project or say that something repeats.
+    @SerialName("project_id") val projectId: String? = null,
+    /** Comma-FRAMED on the server (`,work,urgent,`) so a LIKE can match whole tokens. See [tagList]. */
+    val tags: String? = null,
+    @SerialName("recurrence_id") val recurrenceId: String? = null,
+) {
+    /** The tags as words. The framing commas are storage detail and never belong on screen. */
+    val tagList: List<String> get() = tags.orEmpty().split(",").mapNotNull { it.trim().ifEmpty { null } }
+
+    /** Whether this is one occurrence of a repeating rule. */
+    val repeats: Boolean get() = !recurrenceId.isNullOrBlank()
+}
+
+/** A named bucket of work. Created server-side by naming one during capture; there is no form. */
+@Serializable
+data class Project(
+    val id: String,
+    val name: String,
+    /** active | paused | archived */
+    val status: String = "active",
+    val notes: String? = null,
 )
+
+@Serializable
+data class ProjectsResponse(val projects: List<Project> = emptyList())
+
+/**
+ * A repeating rule, as the server stores it.
+ *
+ * Raw fields, not a sentence: `GET /recurrences` returns the columns and nothing else, so the
+ * phrasing is `describeRecurrence`'s job on this side.
+ */
+@Serializable
+data class Recurrence(
+    val id: String,
+    val title: String,
+    /** fixed | relative */
+    val mode: String = "fixed",
+    /** CSV of day numbers, Sunday = 0. */
+    val weekdays: String? = null,
+    @SerialName("interval_days") val intervalDays: Int? = null,
+    @SerialName("at_hour") val atHour: Int = 9,
+    @SerialName("ended_at") val endedAt: String? = null,
+)
+
+@Serializable
+data class RecurrencesResponse(val recurrences: List<Recurrence> = emptyList())
 
 @Serializable
 data class ParseRequest(val text: String, val tz: String)
@@ -30,6 +80,47 @@ data class Plan(
 
 @Serializable
 data class UnreadResponse(val unread: Int)
+
+/**
+ * A running timer nobody stopped, from the overview.
+ *
+ * Carries only `item_id`, never the item's title — the server does not join it — so a name has to
+ * be looked up locally or left out.
+ */
+@Serializable
+data class StaleWork(
+    val id: String,
+    @SerialName("item_id") val itemId: String? = null,
+    val note: String? = null,
+    @SerialName("start_at") val startAt: String,
+    val seconds: Int = 0,
+)
+
+/** Something pushed back enough times that the server thinks it is worth mentioning. */
+@Serializable
+data class Postponed(val id: String, val title: String, val times: Int = 0)
+
+/**
+ * A daily digest. One shape covers both ends of the day: the morning fills `today`, the evening
+ * fills `done` and `open`, and the four overview fields are common to both.
+ *
+ * Entirely structured — the server's prose renderers were deleted — so the wording on screen is
+ * this app's to choose.
+ */
+@Serializable
+data class Summary(
+    val date: String = "",
+    @SerialName("as_of") val asOf: String = "",
+    val today: List<Item> = emptyList(),
+    val done: List<Item> = emptyList(),
+    val open: List<Item> = emptyList(),
+    val unattended: List<Item> = emptyList(),
+    @SerialName("stale_work") val staleWork: List<StaleWork> = emptyList(),
+    val postponed: List<Postponed> = emptyList(),
+)
+
+/** Which end of the day a [Summary] describes. */
+enum class SummaryKind { Morning, Evening }
 
 /**
  * One notification this device already showed, as the app's notification tab lists it.
@@ -158,22 +249,84 @@ data class MessageRequest(
 )
 
 /**
+ * One thing the server did, with the result it produced.
+ *
+ * [output] is the tool's own return value and its shape depends on [tool] — `created`/`when`/`id`
+ * for a capture, `deleted` for a removal, `answer` for a question. Kept as a raw [JsonObject]
+ * rather than a sealed hierarchy: the UI reads three or four keys out of it, and a class per tool
+ * would be nine declarations that have to be edited every time the server grows a capability.
+ */
+@Serializable
+data class ActionRecord(
+    val tool: String,
+    val output: JsonObject? = null,
+) {
+    /** A string field of the result, or null. */
+    fun str(key: String): String? = (output?.get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content
+}
+
+/**
  * What the server decided to do, and what to say about it.
  *
  * Routing lives on the server because it needs a model to do well. The device used to pattern-
  * match locally, which had no category for input that was not a request at all — so "hello"
  * fell through to the command branch and became a task.
+ *
+ * [actions] is the list, in order, because one message can ask for several things: "add yoga
+ * tomorrow 8am, add tv at 9, bump karate to 11" is three actions in one round-trip. [route]
+ * names only the LAST of them and is kept for older clients — read [actions].
  */
 @Serializable
 data class MessageResponse(
-    /** question | capture | edit | complete | chat */
+    /** question | capture | edit | complete | chat — the last action only. Prefer [actions]. */
     val route: String,
     /** What Halo says. Empty for routes that answer with structured data instead. */
     val reply: String = "",
-    val answer: Answer? = null,
-    val item: Item? = null,
+    val actions: List<ActionRecord> = emptyList(),
     val plan: Plan? = null,
 )
+
+/**
+ * The user's settings, as the server reports them.
+ *
+ * Every field arrives with the deployment's default already folded in — never null — so the
+ * settings page can render a value without knowing what the server would otherwise have used.
+ */
+@Serializable
+data class Profile(
+    val tz: String = "",
+    val lat: Double = 0.0,
+    val lon: Double = 0.0,
+    @SerialName("morning_summary_time") val morningSummaryTime: String = "07:00",
+    @SerialName("evening_summary_time") val eveningSummaryTime: String = "20:00",
+    /** Which face the orb wears. Unknown values fall back to the one we can draw. */
+    val avatar: String = DEFAULT_AVATAR,
+    /** A character Halo plays, for tone only. Empty means its plain voice. */
+    val personality: String = "",
+)
+
+/**
+ * A partial change to the profile.
+ *
+ * Null means "leave this alone", which is why every field is null by default — the server reads a
+ * missing field exactly that way. Clearing a setting back to the default is a separate gesture the
+ * settings page does not currently offer, so it is not modelled here.
+ */
+@Serializable
+data class ProfilePatch(
+    @SerialName("morning_summary_time") val morningSummaryTime: String? = null,
+    @SerialName("evening_summary_time") val eveningSummaryTime: String? = null,
+    val avatar: String? = null,
+    val personality: String? = null,
+    val lat: Double? = null,
+    val lon: Double? = null,
+)
+
+/** The face drawn when the user has never chosen one. Matches the server's own default. */
+const val DEFAULT_AVATAR = "blue_cat"
+
+/** How long a personality may be, mirroring the server's cap so the field can stop at it. */
+const val PERSONALITY_MAX = 200
 
 @Serializable
 data class CommandResponse(val plan: Plan)

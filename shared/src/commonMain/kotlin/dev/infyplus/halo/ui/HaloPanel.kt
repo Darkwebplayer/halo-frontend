@@ -81,6 +81,9 @@ fun HaloPanel(
     var tab by remember { mutableStateOf(initialTab) }
     var draft by remember { mutableStateOf("") }
     var checkins by remember { mutableStateOf<List<CheckIn>>(emptyList()) }
+    // Loading, empty and unreachable are three different things to say. They used to be one.
+    var checkinsLoaded by remember { mutableStateOf(false) }
+    var checkinsError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
@@ -89,8 +92,20 @@ fun HaloPanel(
 
     suspend fun refreshCheckins() {
         apiCatching { api.checkins() }
-            .onSuccess { checkins = it; state.setUnread(it.attentionCount()) ; state.markOffline(false) }
-            .onFailure { state.markOffline(it.isConnectivity()) }
+            .onSuccess {
+                checkins = it
+                state.setUnread(it.attentionCount())
+                state.markOffline(false)
+                checkinsError = null
+            }
+            .onFailure {
+                state.markOffline(it.isConnectivity())
+                // Remembered so the list can say it could not ask. An empty list used to mean
+                // both "nothing has fired" and "the server is unreachable", so being offline read
+                // as having no alerts.
+                checkinsError = it.message ?: "Could not reach your server"
+            }
+        checkinsLoaded = true
     }
 
     // Loaded as soon as the panel opens, not only when the Alerts tab is selected: the badge is
@@ -195,12 +210,19 @@ fun HaloPanel(
                         }
                     }
                 }
+                // A digest the user came here from, shown so they can see what they are asking
+                // about. It carries no scope — see HaloConversation.reference.
+                conversation.reference?.let { (kind, summary) ->
+                    SummaryReferenceCard(kind, summary) { conversation.clearReference() }
+                }
                 ThreadView(conversation.entries, Modifier.weight(1f))
             }
 
             PanelTab.Notifications -> NotificationList(
                 checkins = checkins,
                 modifier = Modifier.weight(1f),
+                loaded = checkinsLoaded,
+                error = checkinsError,
                 onOpen = { checkin ->
                     // Tapping a notification reveals its item: scope the conversation to it and
                     // switch to the chat, which is where you can actually do something about it.
@@ -269,7 +291,8 @@ private fun ScopedCard(item: Item, onAct: (String) -> Unit) {
             color = HaloPalette.ink,
             modifier = Modifier.padding(top = 3.dp),
         )
-        item.dueAt?.let { Mono(it, color = HaloPalette.navy.copy(alpha = 0.85f)) }
+        // Was the raw ISO instant, all 24 characters of it.
+        whenLabel(item.dueAt)?.let { Mono(it, color = HaloPalette.navy.copy(alpha = 0.85f)) }
 
         FlowRow(
             Modifier.padding(top = 10.dp),
@@ -295,7 +318,7 @@ private fun ThreadView(entries: List<ThreadEntry>, modifier: Modifier = Modifier
                 is ThreadEntry.Said -> Bubble(entry.text, entry.fromUser)
                 is ThreadEntry.Routed -> RouteChip(entry)
                 is ThreadEntry.Info -> InfoCard(entry.answer)
-                is ThreadEntry.Card -> CapturedCard(entry.item)
+                is ThreadEntry.Card -> ActionCard(entry)
                 ThreadEntry.Typing -> TypingDots()
             }
         }
@@ -364,8 +387,15 @@ private fun InfoCard(answer: dev.infyplus.halo.Answer) {
     }
 }
 
+/**
+ * One thing the assistant did. Several of these stack up when a single message asked for
+ * several things.
+ *
+ * [ThreadEntry.Card.detail] is the server's own formatted time ("Tomorrow 08:00"), printed as
+ * given — the device has no business re-deriving a time it could garble on the way out.
+ */
 @Composable
-private fun CapturedCard(item: Item) {
+private fun ActionCard(card: ThreadEntry.Card) {
     Column(
         Modifier
             .fillMaxWidth(0.84f)
@@ -374,9 +404,53 @@ private fun CapturedCard(item: Item) {
             .border(2.dp, HaloPalette.navy.copy(alpha = 0.30f), CardShape)
             .padding(horizontal = 13.dp, vertical = 10.dp),
     ) {
-        Mono("CAPTURED · ${item.kind.uppercase()}")
-        Text(item.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = HaloPalette.ink)
-        item.dueAt?.let { Mono(it, color = HaloPalette.navy.copy(alpha = 0.85f)) }
+        Mono(card.label)
+        Text(card.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = HaloPalette.ink)
+        card.detail?.let { Mono(it, color = HaloPalette.navy.copy(alpha = 0.85f)) }
+    }
+}
+
+/**
+ * The digest that brought the user here, above the thread they came to have.
+ *
+ * Reference only — the same slot [ScopedCard] occupies, but with no actions, because there is
+ * nothing on a summary to mark done. Dismissible so it stops taking room once it has been read.
+ */
+@Composable
+private fun SummaryReferenceCard(
+    kind: dev.infyplus.halo.SummaryKind,
+    summary: dev.infyplus.halo.Summary,
+    onDismiss: () -> Unit,
+) {
+    val morning = kind == dev.infyplus.halo.SummaryKind.Morning
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp)
+            .clip(CardShape)
+            .background(HaloPalette.body.copy(alpha = 0.20f))
+            .border(2.dp, HaloPalette.navy.copy(alpha = 0.22f), CardShape)
+            .padding(horizontal = 13.dp, vertical = 10.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Mono(if (morning) "ABOUT YOUR MORNING" else "ABOUT YOUR EVENING", weight = FontWeight.Bold)
+            Mono("DISMISS", Modifier.clickable(onClick = onDismiss), color = HaloPalette.warm)
+        }
+        Text(
+            if (morning) {
+                "${summary.today.size} due today · ${summary.unattended.size} carried over"
+            } else {
+                "${summary.done.size} done · ${summary.open.size} still open"
+            },
+            Modifier.padding(top = 4.dp),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = HaloPalette.ink,
+        )
     }
 }
 
@@ -396,15 +470,55 @@ private fun TypingDots() {
 }
 
 /** What has already fired, newest first. */
+/**
+ * What became of a notification, in the user's words rather than the database's.
+ *
+ * `seen` is a server-internal outcome meaning "nothing was asked of you", so showing it verbatim
+ * described a state the user never chose.
+ */
+private fun outcomeLabel(outcome: String?) = when (outcome) {
+    null -> "NEEDS A DECISION"
+    "seen" -> "READ"
+    "done" -> "DONE"
+    "snoozed" -> "SNOOZED"
+    "rescheduled" -> "MOVED"
+    "deleted" -> "DELETED"
+    else -> outcome.uppercase()
+}
+
+/** What an item-less notification was, read back out of its scheduled id. */
+private fun nudgeTitle(id: String) = when {
+    id.startsWith("summary-morning") -> "Your morning summary"
+    id.startsWith("summary-evening") -> "Your evening summary"
+    id.startsWith("nudge-") -> "How's it going?"
+    else -> "Check-in"
+}
+
 @Composable
 private fun NotificationList(
     checkins: List<CheckIn>,
     modifier: Modifier = Modifier,
+    loaded: Boolean = true,
+    error: String? = null,
     onOpen: (CheckIn) -> Unit,
 ) {
     if (checkins.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Mono("NOTHING HAS FIRED YET")
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                when {
+                    !loaded -> Mono("LOADING…")
+                    error != null -> {
+                        Mono("COULDN'T REACH YOUR SERVER", color = HaloPalette.warm, weight = FontWeight.Bold)
+                        Text(
+                            error,
+                            Modifier.padding(top = 6.dp),
+                            fontSize = 12.sp,
+                            color = HaloPalette.navy.copy(alpha = 0.8f),
+                        )
+                    }
+                    else -> Mono("NOTHING HAS FIRED YET")
+                }
+            }
         }
         return
     }
@@ -428,21 +542,36 @@ private fun NotificationList(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Mono(checkin.sentAt.takeLast(14).take(5)) // HH:MM out of the ISO instant
+                    // Was `sentAt.takeLast(14).take(5)`, a slice written for a 25-char +00:00
+                    // string against the 24-char .000Z one the server actually sends — so every
+                    // row printed the literal text "T06:3". It is a parsed local time now.
                     Mono(
-                        text = checkin.outcome?.uppercase() ?: "NEEDS A DECISION",
+                        listOfNotNull(timeLabel(checkin.sentAt), agoLabel(checkin.sentAt))
+                            .joinToString(" · "),
+                    )
+                    Mono(
+                        text = outcomeLabel(checkin.outcome),
                         color = if (checkin.open) HaloPalette.warm else HaloPalette.navy.copy(alpha = 0.6f),
                         weight = if (checkin.open) FontWeight.Bold else FontWeight.Normal,
                     )
                 }
                 Text(
-                    // A summary or general nudge carries no item, so it has no title of its own.
-                    text = item?.title ?: "Check-in",
+                    // A summary or general nudge carries no item of its own, but its id says which
+                    // kind it was — the only trace of the wording, which is never persisted.
+                    text = item?.title ?: nudgeTitle(checkin.id),
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = HaloPalette.ink,
                 )
-                if (item == null) Mono("NO ITEM ATTACHED")
+                // The thing this was actually about. The server joins and nests the item on every
+                // row precisely so the client need not ask again — and the client threw it away.
+                item?.dueAt?.let { due ->
+                    Mono(
+                        "was due ${whenLabel(due) ?: ""}".trim(),
+                        Modifier.padding(top = 2.dp),
+                        color = HaloPalette.navy.copy(alpha = 0.85f),
+                    )
+                }
             }
         }
     }

@@ -4,10 +4,17 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.infyplus.halo.ActionRecord
 import dev.infyplus.halo.Answer
-import dev.infyplus.halo.Item
 import dev.infyplus.halo.HaloApi
+import dev.infyplus.halo.Item
+import dev.infyplus.halo.Plan
+import dev.infyplus.halo.Summary
+import dev.infyplus.halo.SummaryKind
 import dev.infyplus.halo.Sync
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 
 /** One thing in the transcript. */
 sealed interface ThreadEntry {
@@ -24,8 +31,14 @@ sealed interface ThreadEntry {
     /** A factual answer with its sources. */
     data class Info(val answer: Answer) : ThreadEntry
 
-    /** An item that was created or changed, shown as a card rather than prose. */
-    data class Card(val item: Item) : ThreadEntry
+    /**
+     * Something the assistant did, shown as a card rather than prose.
+     *
+     * One card type for every mutation rather than one per tool: they all say the same three
+     * things, and [detail] arrives pre-formatted by the server ("Tomorrow 08:00") so the device
+     * never re-derives a time it could garble.
+     */
+    data class Card(val label: String, val title: String, val detail: String?) : ThreadEntry
 
     /** Halo is working. Removed when the reply lands. */
     data object Typing : ThreadEntry
@@ -38,6 +51,46 @@ private fun routeLabel(route: String) = when (route) {
     "edit" -> "command → edit on known item"
     "complete" -> "command → mark done"
     else -> "chat"
+}
+
+/** Tools that only read. Anything else changed the list, so the schedule needs re-arming. */
+private val READ_ONLY_TOOLS = setOf("search_items", "answer_question")
+
+/** Which result key names the thing that happened, and what to call it on the card. */
+private val DID = listOf(
+    "created" to "CAPTURED",
+    "deleted" to "DELETED",
+    "moved" to "MOVED",
+    "repeating" to "REPEATING",
+    "changed" to "CHANGED",
+    "stopped" to "STOPPED",
+)
+
+private val ActionJson = Json { ignoreUnknownKeys = true }
+
+/**
+ * One action as a transcript entry, or null when there is nothing worth drawing for it.
+ *
+ * The result shape follows the tool, so this is the single place that knows the mapping —
+ * keeping it here is what lets the server grow a capability without a new model class here.
+ */
+private fun entryFor(action: ActionRecord): ThreadEntry? {
+    val out = action.output ?: return null
+    if (out.containsKey("answer")) {
+        return runCatching { ActionJson.decodeFromJsonElement(Answer.serializer(), out) }
+            .map { ThreadEntry.Info(it) }
+            .getOrNull()
+    }
+    (out["completed"] as? JsonArray)
+        ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
+        ?.takeIf { it.isNotEmpty() }
+        ?.let { return ThreadEntry.Card("DONE", it.joinToString(", "), null) }
+    for ((key, label) in DID) {
+        action.str(key)?.let { title ->
+            return ThreadEntry.Card(label, title, action.str("when") ?: action.str("schedule"))
+        }
+    }
+    return null
 }
 
 /**
@@ -66,6 +119,39 @@ class HaloConversation(
         entries.clear()
         greet()
     }
+
+    /**
+     * A digest shown above the thread, for the reader's reference only.
+     *
+     * Deliberately NOT a scope. `POST /message` carries an `item_id` and nothing else, and a
+     * summary is not an item — but it does not need to be one: the server puts the user's whole
+     * list into the prompt on every single message, so an ordinary conversation can already answer
+     * anything the digest raises. Sending the summary text too would be paying to repeat what the
+     * model was given anyway.
+     */
+    var reference by mutableStateOf<Pair<SummaryKind, Summary>?>(null)
+        private set
+
+    fun referTo(kind: SummaryKind, summary: Summary) {
+        reference = kind to summary
+        scope = null
+        entries.clear()
+        greet()
+    }
+
+    fun clearReference() {
+        reference = null
+    }
+
+    /**
+     * The plan as of the last message that changed something.
+     *
+     * `POST /message` returns it for free whenever an action mutated the list, so a screen showing
+     * the day can pick it up instead of refetching. Null until the assistant has actually done
+     * something.
+     */
+    var latestPlan by mutableStateOf<Plan?>(null)
+        private set
 
     fun greet() {
         entries.add(
@@ -108,10 +194,19 @@ class HaloConversation(
                     // happened" above a greeting is noise, and the absence of a chip is already
                     // the signal that nothing was recorded.
                     if (response.route != "chat") {
-                        add(ThreadEntry.Routed(routeLabel(response.route), response.route == "question"))
+                        // `route` names only the LAST action, so labelling a three-action reply
+                        // with it would describe one card and quietly misdescribe the other two.
+                        add(
+                            ThreadEntry.Routed(
+                                if (response.actions.size > 1) "command → ${response.actions.size} things"
+                                else routeLabel(response.route),
+                                response.route == "question",
+                            ),
+                        )
                     }
-                    response.answer?.let { add(ThreadEntry.Info(it)) }
-                    response.item?.let { add(ThreadEntry.Card(it)) }
+                    // One card per action, in the order the server did them. A message asking for
+                    // three things gets three cards; the single-action case is unchanged.
+                    response.actions.forEach { action -> entryFor(action)?.let(::add) }
                     if (response.reply.isNotBlank()) {
                         add(ThreadEntry.Said(response.reply, fromUser = false))
                     }
@@ -126,9 +221,12 @@ class HaloConversation(
         }
 
         // Only a scoped reply that actually changed or completed the item counts as settled;
-        // a question about it, or a failure, leaves it outstanding.
+        // a question about it, or a failure, leaves it outstanding. Read across every action:
+        // "mark it done and add a follow-up" settles the notification on the first, and keying
+        // off the last one alone would leave it hanging.
+        val actions = result.getOrNull()?.second?.actions.orEmpty()
         val settled = scope != null &&
-            result.getOrNull()?.second?.route in setOf("complete", "edit")
+            actions.any { it.tool == "complete_item" || it.tool == "reschedule_item" }
 
         result
             .onSuccess { (added, response) ->
@@ -136,8 +234,13 @@ class HaloConversation(
                 state.markOffline(false)
                 // A new or moved reminder changes what this device should be waking up for, so
                 // re-arm now rather than waiting for the next sync tick — otherwise "remind me
-                // in one minute" is missed by several.
-                if (response.route == "capture" || response.route == "edit") Sync.once(api)
+                // in one minute" is missed by several. Any mutation counts, not just a capture:
+                // a delete or a stopped series changes the armed set just as much.
+                if (response.actions.any { it.tool !in READ_ONLY_TOOLS }) Sync.once(api)
+                // The server sends the updated plan with every mutating message and the app used
+                // to drop it, so the assistant could complete something and Today would keep
+                // showing it until the tab was left and re-entered.
+                response.plan?.let { latestPlan = it }
                 // Settling it in prose leaves the notification just as stale as tapping a chip.
                 if (settled) scope?.id?.let { dev.infyplus.halo.Notifications.dismissFor(it) }
                 state.reactToSend(succeeded = true)
@@ -149,7 +252,10 @@ class HaloConversation(
                 state.markOffline(unreachable)
                 entries.add(
                     ThreadEntry.Routed(
-                        if (unreachable) "queued · offline" else "failed",
+                        // Was "queued · offline", which contradicted the line printed directly
+                        // beneath it — nothing is queued, and telling someone their message is
+                        // waiting to send when it was dropped is the worst of both.
+                        if (unreachable) "not sent · offline" else "failed",
                         question = false,
                     ),
                 )

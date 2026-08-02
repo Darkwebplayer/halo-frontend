@@ -29,7 +29,7 @@ import dev.infyplus.halo.ui.HaloState
 import dev.infyplus.halo.ui.HaloTab
 import dev.infyplus.halo.ui.HaloTheme
 
-enum class AppSection { Today, Focus, Assistant, Settings }
+enum class AppSection { Today, Focus, Projects, Assistant, Settings }
 
 /**
  * The app proper, as opposed to the overlay: the same three things the popup can do, with room to
@@ -73,11 +73,29 @@ fun App(
                 }
 
                 when (section) {
-                    AppSection.Today -> CaptureScreen(api)
+                    // Scrollable, and deliberately not a LazyColumn: the summary card, the capture
+                    // box and the grouped plan are one continuous column, and a lazy list nested
+                    // inside a scrolling parent throws.
+                    AppSection.Today -> Column(
+                        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                    ) {
+                        CaptureScreen(
+                            api = api,
+                            planFromChat = conversation.latestPlan,
+                        ) { kind, summary ->
+                            conversation.referTo(kind, summary)
+                            section = AppSection.Assistant
+                        }
+                    }
                     // Scrollable because the dial, the task card and four steppers do not fit a
                     // phone in portrait.
                     AppSection.Focus -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                         FocusScreen(api)
+                    }
+                    AppSection.Projects -> Column(
+                        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                    ) {
+                        ProjectsScreen(api)
                     }
                     AppSection.Assistant -> HaloPanel(
                         api = api,

@@ -1,5 +1,6 @@
 package dev.infyplus.halo
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.infyplus.halo.ui.HaloButton
@@ -25,6 +27,7 @@ import dev.infyplus.halo.ui.HaloCard
 import dev.infyplus.halo.ui.HaloPalette
 import dev.infyplus.halo.ui.HaloField
 import dev.infyplus.halo.ui.Mono
+import dev.infyplus.halo.ui.TailVisible
 import dev.infyplus.halo.ui.apiCatching
 import dev.infyplus.halo.ui.isConnectivity
 import kotlinx.coroutines.launch
@@ -84,6 +87,7 @@ fun CredentialsCard(onSaved: () -> Unit = {}, modifier: Modifier = Modifier) {
     var url by remember { mutableStateOf(Config.baseUrl) }
     var token by remember { mutableStateOf(Config.authToken) }
     var busy by remember { mutableStateOf(false) }
+    var peek by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<Probe?>(null) }
     val scope = rememberCoroutineScope()
 
@@ -109,13 +113,28 @@ fun CredentialsCard(onSaved: () -> Unit = {}, modifier: Modifier = Modifier) {
             enabled = !busy,
         )
 
-        Mono("ACCESS TOKEN")
+        // Masked by default: this is a standing credential, and a settings page is the one screen
+        // people open with someone looking over their shoulder. The last four characters stay
+        // visible so a changed or mis-pasted token is still recognisable without revealing it.
+        Row(
+            Modifier.fillMaxWidth().padding(top = 2.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Mono("ACCESS TOKEN")
+            Mono(
+                if (peek) "HIDE" else "SHOW",
+                color = HaloPalette.warm,
+                modifier = Modifier.clickable(enabled = token.isNotEmpty()) { peek = !peek },
+            )
+        }
         HaloField(
             value = token,
             placeholder = "the AUTH_TOKEN your server was deployed with",
             onChange = { token = it },
             modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 12.dp),
             enabled = !busy,
+            visualTransformation = if (peek) VisualTransformation.None else TailVisible(),
         )
 
         Row(
@@ -155,7 +174,7 @@ fun CredentialsCard(onSaved: () -> Unit = {}, modifier: Modifier = Modifier) {
     }
 }
 
-/** The Settings section: the same card, padded for a full screen. */
+/** The Settings section: the credentials, then everything that needs a server to already work. */
 @Composable
 fun SettingsScreen(onSaved: () -> Unit = {}, modifier: Modifier = Modifier) {
     Column(
@@ -163,6 +182,9 @@ fun SettingsScreen(onSaved: () -> Unit = {}, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         CredentialsCard(onSaved)
+        // Below the credentials, and only once they exist: these settings live on the server, so
+        // there is nothing to load or save until it can be reached.
+        if (Config.isConfigured) ProfileCard()
     }
 }
 

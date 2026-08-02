@@ -9,16 +9,30 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.graphicsLayer
+import dev.infyplus.halo.prefersReducedMotion
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -114,6 +128,7 @@ fun HaloField(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     singleLine: Boolean = true,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
 ) {
     Box(
         modifier
@@ -131,8 +146,53 @@ fun HaloField(
             singleLine = singleLine,
             textStyle = TextStyle(fontSize = 14.sp, color = HaloPalette.ink),
             cursorBrush = SolidColor(HaloPalette.ink),
+            visualTransformation = visualTransformation,
             modifier = Modifier.fillMaxWidth(),
         )
+    }
+}
+
+/**
+ * Makes a surface answer the finger the moment it lands, not when it lifts.
+ *
+ * Waiting for the click to acknowledge a press is the single cheapest way to make an interface
+ * feel dead — the gap between touching something and seeing it react is read as lag even when the
+ * work afterwards is instant. So this is driven by the press interaction, which fires on down.
+ *
+ * A spring rather than a tween because a press can be released mid-animation and the scale has to
+ * turn round from wherever it actually is. Critically damped: a button that bounces reads as a toy.
+ */
+@Composable
+fun Modifier.pressScale(
+    interactionSource: MutableInteractionSource,
+    pressed: Float = 0.97f,
+): Modifier {
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val reduced = remember { prefersReducedMotion() }
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) pressed else 1f,
+        animationSpec = if (reduced) snap() else spring(dampingRatio = Spring.DampingRatioNoBouncy),
+        label = "pressScale",
+    )
+    return this.graphicsLayer { scaleX = scale; scaleY = scale }
+}
+
+/**
+ * Hides all but the last [reveal] characters of a secret.
+ *
+ * The tail is deliberately left visible. A fully-masked field gives no way to tell a token that
+ * was pasted correctly from one that was not, and no way to notice that it has been replaced —
+ * so people clear it and paste again, which is worse for the secret than showing four characters.
+ *
+ * Short values are masked entirely rather than mostly-revealed, which is the case where showing a
+ * tail would give away most of the string.
+ */
+class TailVisible(private val reveal: Int = 4) : VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        val keep = if (text.length > reveal * 2) reveal else 0
+        val masked = "•".repeat(text.length - keep) + text.text.takeLast(keep)
+        // The mask is character-for-character, so offsets map straight through.
+        return TransformedText(AnnotatedString(masked), OffsetMapping.Identity)
     }
 }
 

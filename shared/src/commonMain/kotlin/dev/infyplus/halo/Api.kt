@@ -8,6 +8,7 @@ import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -130,6 +131,60 @@ class HaloApi(
             setBody(FiredReport(scheduledId, itemId))
         }
         if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
+    }
+
+    /**
+     * A daily digest — what today holds, or what today came to.
+     *
+     * Worth calling sparingly: the server materialises recurrence instances while building this,
+     * so it is a write as much as a read. [dev.infyplus.halo.ui.SummaryStore] caches the result
+     * for the local day rather than re-asking on every visit.
+     */
+    suspend fun summary(kind: SummaryKind): Summary = call {
+        val path = if (kind == SummaryKind.Morning) "morning" else "evening"
+        val res = client.get("$baseUrl/summary/$path") {
+            header("authorization", "Bearer $authToken")
+        }
+        if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
+        res.body()
+    }
+
+    /** Every project, archived ones included — items carry only a `project_id`, never a name. */
+    suspend fun projects(): List<Project> = call {
+        val res = client.get("$baseUrl/projects") { header("authorization", "Bearer $authToken") }
+        if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
+        res.body<ProjectsResponse>().projects
+    }
+
+    /** Every repeating rule, so a recurring item can say how often it comes back. */
+    suspend fun recurrences(): List<Recurrence> = call {
+        val res = client.get("$baseUrl/recurrences") { header("authorization", "Bearer $authToken") }
+        if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
+        res.body<RecurrencesResponse>().recurrences
+    }
+
+    /** The user's settings, with the server's own defaults already folded in. */
+    suspend fun profile(): Profile = call {
+        val res = client.get("$baseUrl/profile") { header("authorization", "Bearer $authToken") }
+        if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
+        res.body()
+    }
+
+    /**
+     * Change some settings. Only the fields present in [patch] are touched.
+     *
+     * A partial patch rather than the whole object on purpose: the server treats a missing field
+     * as "leave alone" and an explicit null as "back to the default", and sending the whole
+     * profile back would turn every save into a race with whatever another device just set.
+     */
+    suspend fun saveProfile(patch: ProfilePatch): Profile = call {
+        val res = client.put("$baseUrl/profile") {
+            contentType(ContentType.Application.Json)
+            header("authorization", "Bearer $authToken")
+            setBody(patch)
+        }
+        if (!res.status.isSuccess()) throw ApiException(res.errorMessage())
+        res.body()
     }
 
     /** Today's plan: carried-over work plus today's. */

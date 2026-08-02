@@ -162,6 +162,7 @@ fun FocusScreen(
     val state = timer.state
     var picking by remember { mutableStateOf(false) }
     var tasks by remember { mutableStateOf<List<Item>>(emptyList()) }
+    var loadingTasks by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
@@ -249,6 +250,7 @@ fun FocusScreen(
                         // state as if it were current.
                         tasks = emptyList()
                         error = null
+                        loadingTasks = true
                         scope.launch {
                             // /plan already excludes completed items server-side; the filter is
                             // here so a task finished in this session cannot linger in the list.
@@ -256,6 +258,7 @@ fun FocusScreen(
                             apiCatching { api.plan() }
                                 .onSuccess { p -> tasks = (p.rollover + p.today).filter { it.doneAt.isNullOrBlank() } }
                                 .onFailure { error = it.message ?: "Could not load your plan" }
+                            loadingTasks = false
                         }
                     }
                 }
@@ -266,7 +269,18 @@ fun FocusScreen(
                 // lazy list there is measured with unbounded height, which throws. A day's plan is
                 // a short list, so there is nothing to virtualise anyway.
                 Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                    if (tasks.isEmpty()) Mono("NOTHING ON THE PLAN")
+                    // The list is cleared before the refetch, so without this the picker said
+                    // "NOTHING ON THE PLAN" for the whole round-trip every single time.
+                    if (tasks.isEmpty()) {
+                        Mono(
+                            when {
+                                loadingTasks -> "LOADING YOUR PLAN…"
+                                error != null -> "COULDN'T REACH YOUR SERVER"
+                                else -> "NOTHING ON THE PLAN"
+                            },
+                            color = if (error != null && !loadingTasks) HaloPalette.warm else HaloPalette.navy.copy(alpha = 0.78f),
+                        )
+                    }
                     tasks.forEach { item ->
                         Text(
                             item.title,
