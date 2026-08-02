@@ -58,6 +58,7 @@ private val READ_ONLY_TOOLS = setOf("search_items", "answer_question")
 
 /** Which result key names the thing that happened, and what to call it on the card. */
 private val DID = listOf(
+    "created_project" to "PROJECT",
     "created" to "CAPTURED",
     "deleted" to "DELETED",
     "moved" to "MOVED",

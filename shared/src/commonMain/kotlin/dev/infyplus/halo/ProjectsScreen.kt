@@ -27,9 +27,13 @@ import dev.infyplus.halo.ui.describeRecurrence
 /**
  * Every project and what is open under it.
  *
- * Read-only on purpose. Projects are created server-side by naming one while capturing ("ship the
- * API for Zenith") — there is no form for them anywhere, and inventing one here would add a second
- * way to make something that already has a natural one.
+ * Read-only on purpose: projects are made by asking for one in chat, which already handles naming,
+ * duplicates and filing something into it in the same breath. A form here would be a second way to
+ * do something that has a good one.
+ *
+ * Note that naming a project while capturing does not create it. An unrecognised name files the
+ * item nowhere, on purpose — otherwise a typo would mint a project nobody wanted, and the list
+ * would fill with near-duplicates of real ones.
  *
  * The plan is the source of open work: items carry a `project_id` and nothing else, so the join
  * happens here.
@@ -78,7 +82,11 @@ fun ProjectsScreen(api: HaloApi = remember { HaloApi(Config.baseUrl, Config.auth
             projects.isEmpty() -> Column {
                 Mono("NO PROJECTS YET", weight = FontWeight.Bold)
                 Text(
-                    "Name one while capturing and it appears here — try \"ship the API for Zenith\".",
+                    // Naming a project while capturing does NOT create it — an unknown name files
+                    // the item nowhere, deliberately, so a typo cannot mint one. Asking for it is
+                    // the way, and the assistant can do both in a single message.
+                    "Ask for one — try \"create a Zenith project\", or \"create a Zenith project " +
+                        "and add ship the API to it\".",
                     Modifier.padding(top = 6.dp),
                     fontSize = 13.sp,
                     color = HaloPalette.navy.copy(alpha = 0.85f),
